@@ -1,1 +1,55 @@
-<h1>Hello Strixhaven</h1>
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Strixhaven Tracker</title>
+</head>
+<body>
+    <h1>Strixhaven Tracker</h1>
+    <p>Player Health: <span id="healthDisplay">Loading...</span></p>
+    <button onclick="updateHealth(1)">+1 HP</button>
+    <button onclick="updateHealth(-1)">-1 HP</button>
+
+    <!-- Firebase SDK Modules -->
+    <script type="module">
+        // Import the Firebase functions you need
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.1/firebase-app.js";
+        import { getFirestore, doc, setDoc, onSnapshot } from "https://www.gstatic.com/firebasejs/10.8.1/firebase-firestore.js";
+
+        // PASTE YOUR FIREBASE CONFIG HERE (From Step 4)
+        const firebaseConfig = {
+            apiKey: "AIzaSyCzdZPMA379N6DEuZQpLJzh1hsUthsQhJ4",
+            authDomain: "strixhaventracker.firebaseapp.com",
+            projectId: "strixhaventracker",
+            storageBucket: "strixhaventracker.firebasestorage.app",
+            messagingSenderId: "1062472894908",
+            appId: "1:1062472894908:web:63cd9d4ec0a418436d43b9"
+        };
+
+        // Initialize Firebase
+        const app = initializeApp(firebaseConfig);
+        const db = getFirestore(app);
+
+        // Reference to a specific character's document in the database
+        const characterRef = doc(db, "campaign", "garrick");
+
+        // Listen for live updates from Firebase
+        onSnapshot(characterRef, (doc) => {
+            if (doc.exists()) {
+                document.getElementById("healthDisplay").innerText = doc.data().hp;
+                window.currentHp = doc.data().hp; // Store locally for math
+            } else {
+                // If the character doesn't exist yet, create them with 10 HP
+                setDoc(characterRef, { hp: 10 });
+            }
+        });
+
+        // Function to update health in Firebase when buttons are clicked
+        window.updateHealth = function(change) {
+            const newHp = window.currentHp + change;
+            setDoc(characterRef, { hp: newHp }, { merge: true });
+        };
+    </script>
+</body>
+</html>
