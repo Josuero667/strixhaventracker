@@ -4,20 +4,20 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Strixhaven Tracker</title>
-</head>
-<body>
-    <h1>Strixhaven Tracker</h1>
-    <p>Player Health: <span id="healthDisplay">Loading...</span></p>
-    <button onclick="updateHealth(1)">+1 HP</button>
-    <button onclick="updateHealth(-1)">-1 HP</button>
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Material Icons -->
+    <link href="https://fonts.googleapis.com/icon?family=Material+Icons" rel="stylesheet">
+    <!-- Google Fonts -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;700;900&display=swap" rel="stylesheet">
 
     <!-- Firebase SDK Modules -->
     <script type="module">
-        // Import the Firebase functions you need
         import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.1/firebase-app.js";
-        import { getFirestore, doc, setDoc, onSnapshot } from "https://www.gstatic.com/firebasejs/10.8.1/firebase-firestore.js";
+        import { getFirestore, doc, setDoc, getDoc, getDocs, onSnapshot, collection, deleteDoc } from "https://www.gstatic.com/firebasejs/10.8.1/firebase-firestore.js";
 
-        // PASTE YOUR FIREBASE CONFIG HERE (From Step 4)
+        // ==========================================
+        // PASTE YOUR FIREBASE CONFIG HERE
         const firebaseConfig = {
             apiKey: "AIzaSyCzdZPMA379N6DEuZQpLJzh1hsUthsQhJ4",
             authDomain: "strixhaventracker.firebaseapp.com",
@@ -26,30 +26,1439 @@
             messagingSenderId: "1062472894908",
             appId: "1:1062472894908:web:63cd9d4ec0a418436d43b9"
         };
+        // ==========================================
 
-        // Initialize Firebase
         const app = initializeApp(firebaseConfig);
         const db = getFirestore(app);
 
-        // Reference to a specific character's document in the database
-        const characterRef = doc(db, "campaign", "garrick");
-
-        // Listen for live updates from Firebase
-        onSnapshot(characterRef, (doc) => {
-            if (doc.exists()) {
-                document.getElementById("healthDisplay").innerText = doc.data().hp;
-                window.currentHp = doc.data().hp; // Store locally for math
-            } else {
-                // If the character doesn't exist yet, create them with 10 HP
-                setDoc(characterRef, { hp: 10 });
-            }
-        });
-
-        // Function to update health in Firebase when buttons are clicked
-        window.updateHealth = function(change) {
-            const newHp = window.currentHp + change;
-            setDoc(characterRef, { hp: newHp }, { merge: true });
+        // Global State
+        let currentCampaignId = null;
+        let currentCharacterId = null;
+        let currentCharacterData = null;
+        let campaignState = { shortRestsUsed: 0 };
+        let unsubscribeChar = null;
+        let unsubscribeCampaign = null;
+        let availableSpells = [];
+        
+        // Turn State
+        let turnQueue = {
+            hpChange: 0,
+            manaChange: 0,
+            spellsToCast: []
         };
+
+        // Predefined Spell Icons
+        const spellIcons = [
+            'auto_fix_high', 'local_fire_department', 'ac_unit', 'bolt', 'water_drop', 
+            'flare', 'favorite', 'shield', 'healing', 'dark_mode', 'visibility', 
+            'hurricane', 'cyclone', 'waves', 'volcano', 'wb_sunny', 'nightlight'
+        ];
+
+        // UI Elements
+        const screens = {
+            campaigns: document.getElementById('screen-campaigns'),
+            menu: document.getElementById('screen-menu'),
+            auth: document.getElementById('screen-auth'),
+            create: document.getElementById('screen-create'),
+            tracker: document.getElementById('screen-tracker'),
+            attack: document.getElementById('screen-create-attack'),
+            execute: document.getElementById('screen-execute-action')
+        };
+
+        // Modal Elements
+        const confirmModal = document.getElementById('modal-confirm');
+        let confirmAction = null;
+
+        let pendingAuthId = null;
+        let pendingAuthAction = null; // 'login' or 'delete'
+
+        // --- Navigation Helpers ---
+        function showScreen(screenName) {
+            Object.values(screens).forEach(s => s.classList.add('hidden'));
+            screens[screenName].classList.remove('hidden');
+            
+            // Adjust body background based on screen context
+            if (screenName === 'tracker' && currentCharacterData) {
+                applyCharacterTheme();
+            } else {
+                document.body.style.background = '';
+                document.getElementById('tracker-header').style.background = '';
+            }
+        }
+
+        function showConfirm(title, message, actionText, actionCallback) {
+            document.getElementById('confirm-title').innerText = title;
+            document.getElementById('confirm-message').innerText = message;
+            const btn = document.getElementById('btn-confirm-action');
+            btn.innerText = actionText;
+            
+            confirmAction = actionCallback;
+            confirmModal.classList.remove('hidden');
+        }
+
+        function hideConfirm() {
+            confirmModal.classList.add('hidden');
+            confirmAction = null;
+        }
+
+        window.hideConfirm = hideConfirm;
+        window.executeConfirm = () => {
+            if (confirmAction) confirmAction();
+            hideConfirm();
+        };
+
+
+        // --- Screen 0: Campaign Selection ---
+        window.loadCampaignMenu = function() {
+            const listEl = document.getElementById('campaign-list');
+            listEl.innerHTML = '';
+            
+            const btn = document.createElement('button');
+            btn.className = 'w-full p-6 bg-gray-800 hover:bg-gray-700 rounded-2xl border border-gray-700 shadow-xl flex items-center justify-between group transition';
+            btn.innerHTML = `
+                <div class="flex items-center gap-4">
+                    <div class="w-12 h-12 rounded-full bg-purple-900/50 flex items-center justify-center text-purple-400 group-hover:scale-110 transition-transform">
+                        <span class="material-icons text-2xl">menu_book</span>
+                    </div>
+                    <div class="text-left">
+                        <h3 class="text-xl font-bold text-white">Strixhaven</h3>
+                        <p class="text-sm text-gray-400">Current Campaign</p>
+                    </div>
+                </div>
+                <span class="material-icons text-gray-500 group-hover:text-white transition-colors">chevron_right</span>
+            `;
+            btn.addEventListener('click', () => {
+                currentCampaignId = 'strixhaven'; // Hardcoded ID for now
+                loadCharacterMenu();
+                initCampaignSync();
+                loadSpells();
+                showScreen('menu');
+            });
+            listEl.appendChild(btn);
+        }
+
+        window.backToCampaigns = function() {
+            currentCampaignId = null;
+            if (unsubscribeCampaign) unsubscribeCampaign();
+            showScreen('campaigns');
+        }
+
+        // --- Shared Campaign State Sync ---
+        function initCampaignSync() {
+            if (unsubscribeCampaign) unsubscribeCampaign();
+            
+            const campaignRef = doc(db, "campaigns", currentCampaignId);
+            
+            // Ensure document exists
+            setDoc(campaignRef, { shortRestsUsed: 0 }, { merge: true });
+
+            unsubscribeCampaign = onSnapshot(campaignRef, (snapshot) => {
+                if (snapshot.exists()) {
+                    const data = snapshot.data();
+                    
+                    // Detect if a rest was triggered by someone else (or us)
+                    if (data.lastRestType && data.lastRestTimestamp !== campaignState.lastRestTimestamp) {
+                        handleSharedRest(data.lastRestType);
+                    }
+                    
+                    campaignState = data;
+                    updateRestUI();
+                }
+            });
+        }
+
+        async function triggerSharedRest(type) {
+            if (!currentCampaignId) return;
+            const campaignRef = doc(db, "campaigns", currentCampaignId);
+            
+            let updates = {
+                lastRestType: type,
+                lastRestTimestamp: Date.now()
+            };
+
+            if (type === 'short') {
+                if (campaignState.shortRestsUsed >= 2) return; // Max reached
+                updates.shortRestsUsed = (campaignState.shortRestsUsed || 0) + 1;
+            } else if (type === 'long') {
+                updates.shortRestsUsed = 0; // Reset on long rest
+            }
+
+            try {
+                await setDoc(campaignRef, updates, { merge: true });
+            } catch (e) {
+                console.error("Error triggering rest:", e);
+            }
+        }
+
+        function handleSharedRest(type) {
+             if(!currentCharacterData) return;
+             const data = currentCharacterData;
+             
+             if (type === 'short') {
+                 // Short rest: Restore mana up to max
+                 updateDocData({ mana: data.maxMana });
+             } else if (type === 'long') {
+                 // Long rest: Restore HP and Mana to max
+                 updateDocData({ hp: data.maxHp, mana: data.maxMana });
+             }
+        }
+
+        function updateRestUI() {
+            const shortRestBtn = document.getElementById('btn-short-rest');
+            const usedRests = campaignState.shortRestsUsed || 0;
+            const remaining = 2 - usedRests;
+            
+            document.getElementById('rest-counter').innerText = `${remaining}/2`;
+            
+            if (remaining <= 0) {
+                shortRestBtn.classList.add('opacity-50', 'grayscale');
+                shortRestBtn.disabled = true;
+            } else {
+                shortRestBtn.classList.remove('opacity-50', 'grayscale');
+                shortRestBtn.disabled = false;
+            }
+        }
+
+        // --- Spell Database Sync ---
+        async function loadSpells() {
+            if (!currentCampaignId) return;
+            try {
+                const querySnapshot = await getDocs(collection(db, "campaigns", currentCampaignId, "spells"));
+                availableSpells = [];
+                querySnapshot.forEach((doc) => {
+                    availableSpells.push({ id: doc.id, ...doc.data() });
+                });
+                populateSpellSelector();
+            } catch (error) {
+                console.error("Error loading spells:", error);
+            }
+        }
+
+        function populateSpellSelector() {
+            const select = document.getElementById('attack-selector');
+            select.innerHTML = '<option value="new">-- Create New Ability --</option>';
+            
+            availableSpells.forEach(spell => {
+                select.innerHTML += `<option value="${spell.id}">${spell.name} (Lvl ${spell.level})</option>`;
+            });
+        }
+
+
+        // --- Screen 1: Character Menu ---
+        async function loadCharacterMenu() {
+            if (!currentCampaignId) return;
+            
+            document.getElementById('menu-campaign-title').innerText = currentCampaignId.charAt(0).toUpperCase() + currentCampaignId.slice(1);
+            
+            const listEl = document.getElementById('character-list');
+            listEl.innerHTML = '<div class="text-center text-gray-500 py-4">Loading roster...</div>';
+
+            try {
+                const querySnapshot = await getDocs(collection(db, "campaigns", currentCampaignId, "characters"));
+                listEl.innerHTML = '';
+                
+                querySnapshot.forEach((docSnap) => {
+                    const char = docSnap.data();
+                    const div = document.createElement('div');
+                    div.className = 'bg-gray-800 p-4 rounded-xl border border-gray-700 flex items-center justify-between shadow-lg';
+                    
+                    const charColor = char.color1 || '#4ade80';
+                    
+                    // Portrait fallback logic
+                    let portraitHtml = '';
+                    if(char.portraitUrl) {
+                        portraitHtml = `<img src="${char.portraitUrl}" class="w-12 h-12 rounded-full object-cover border-2" style="border-color: ${charColor}">`;
+                    } else {
+                        const initial = char.name ? char.name.charAt(0).toUpperCase() : '?';
+                        portraitHtml = `<div class="w-12 h-12 rounded-full flex items-center justify-center text-white font-bold text-xl border-2 shadow-inner" style="background-color: ${charColor}; border-color: ${char.color2 || charColor}">${initial}</div>`;
+                    }
+
+                    div.innerHTML = `
+                        <div class="flex items-center gap-4">
+                            ${portraitHtml}
+                            <div>
+                                <h3 class="text-lg font-bold text-white leading-tight">${char.name}</h3>
+                                <p class="text-sm text-gray-400">Lvl ${char.level || 1} ${char.class || 'Student'}</p>
+                            </div>
+                        </div>
+                        <div class="flex gap-2">
+                            <button class="p-2 bg-gray-700 hover:bg-gray-600 rounded-lg text-white transition" onclick="promptAuth('${docSnap.id}', 'login')">
+                                <span class="material-icons text-xl">login</span>
+                            </button>
+                            <button class="p-2 bg-red-900/30 hover:bg-red-900/50 text-red-500 rounded-lg transition" onclick="promptAuth('${docSnap.id}', 'delete')">
+                                <span class="material-icons text-xl">delete</span>
+                            </button>
+                        </div>
+                    `;
+                    listEl.appendChild(div);
+                });
+            } catch (error) {
+                console.error("Error loading characters:", error);
+                listEl.innerHTML = '<div class="text-center text-red-500 py-4">Error loading roster.</div>';
+            }
+        }
+
+        window.promptAuth = function(id, action) {
+            pendingAuthId = id;
+            pendingAuthAction = action;
+            document.getElementById('auth-password').value = '';
+            document.getElementById('auth-error').classList.add('hidden');
+            
+            const title = document.getElementById('auth-title');
+            const submitBtn = document.getElementById('btn-auth-submit');
+            
+            if (action === 'delete') {
+                title.innerText = "Authorize Deletion";
+                submitBtn.innerText = "Delete Permanently";
+                submitBtn.className = "w-full py-4 bg-red-600 hover:bg-red-500 text-white rounded-xl font-bold shadow-lg transition";
+            } else {
+                title.innerText = "Access Sheet";
+                submitBtn.innerText = "Unlock";
+                submitBtn.className = "w-full py-4 bg-blue-600 hover:bg-blue-500 text-white rounded-xl font-bold shadow-lg transition";
+            }
+            
+            showScreen('auth');
+        }
+
+        window.cancelAuth = function() {
+            pendingAuthId = null;
+            pendingAuthAction = null;
+            showScreen('menu');
+        }
+
+        window.submitAuth = async function() {
+            const password = document.getElementById('auth-password').value;
+            if (!password || !currentCampaignId) return;
+
+            try {
+                const charRef = doc(db, "campaigns", currentCampaignId, "characters", pendingAuthId);
+                const snapshot = await getDoc(charRef);
+                
+                if (snapshot.exists()) {
+                    const charData = snapshot.data();
+                    
+                    if (charData.password === password) {
+                        if (pendingAuthAction === 'delete') {
+                            await deleteDoc(charRef);
+                            pendingAuthId = null;
+                            loadCharacterMenu();
+                            showScreen('menu');
+                        } else {
+                            currentCharacterId = pendingAuthId;
+                            currentCharacterData = charData;
+                            initTrackerUI();
+                            showScreen('tracker');
+                        }
+                    } else {
+                        document.getElementById('auth-error').classList.remove('hidden');
+                    }
+                }
+            } catch (error) {
+                console.error("Auth error:", error);
+            }
+        }
+
+        // --- Screen 3: Create Character ---
+        window.showCreate = function() {
+            document.getElementById('form-create').reset();
+            showScreen('create');
+        }
+
+        window.cancelCreate = function() {
+            showScreen('menu');
+        }
+
+        window.submitCreate = async function(e) {
+            e.preventDefault();
+            if (!currentCampaignId) return;
+
+            const name = document.getElementById('create-name').value.trim();
+            const password = document.getElementById('create-password').value;
+            if (!name || !password) return;
+
+            const id = name.toLowerCase().replace(/[^a-z0-9]/g, '-') + '-' + Math.floor(Math.random() * 1000);
+
+            const newChar = {
+                name: name,
+                password: password,
+                maxHp: parseInt(document.getElementById('create-hp').value) || 10,
+                hp: parseInt(document.getElementById('create-hp').value) || 10,
+                maxMana: parseInt(document.getElementById('create-mana').value) || 5,
+                mana: parseInt(document.getElementById('create-mana').value) || 5,
+                passiveRegen: parseInt(document.getElementById('create-regen').value) || 1,
+                color1: document.getElementById('create-color1').value,
+                color2: document.getElementById('create-color2').value,
+                class: document.getElementById('create-class').value.trim(),
+                species: document.getElementById('create-species').value.trim(),
+                school: document.getElementById('create-school').value.trim(),
+                level: parseInt(document.getElementById('create-level').value) || 1,
+                ac: parseInt(document.getElementById('create-ac').value) || 10,
+                str: parseInt(document.getElementById('create-str').value) || 10,
+                dex: parseInt(document.getElementById('create-dex').value) || 10,
+                con: parseInt(document.getElementById('create-con').value) || 10,
+                int: parseInt(document.getElementById('create-int').value) || 10,
+                wis: parseInt(document.getElementById('create-wis').value) || 10,
+                cha: parseInt(document.getElementById('create-cha').value) || 10,
+                portraitUrl: document.getElementById('create-portrait').value.trim(),
+                currency: { cp: 0, sp: 0, gp: 0 },
+                notes: "",
+                attacks: []
+            };
+
+            try {
+                await setDoc(doc(db, "campaigns", currentCampaignId, "characters", id), newChar);
+                document.getElementById('form-create').reset();
+                loadCharacterMenu();
+                showScreen('menu');
+            } catch (error) {
+                console.error("Error creating character:", error);
+            }
+        }
+
+
+        // --- Screen 4: The Tracker ---
+        function applyCharacterTheme() {
+            if(!currentCharacterData) return;
+            const c1 = currentCharacterData.color1 || '#3b82f6';
+            const c2 = currentCharacterData.color2 || '#1e3a8a';
+            
+            document.documentElement.style.setProperty('--char-c1', c1);
+            document.documentElement.style.setProperty('--char-c2', c2);
+
+            // Apply gradient background
+            document.body.style.background = `linear-gradient(135deg, #111827 0%, ${c2}40 100%)`;
+            
+            // Header styling
+            document.getElementById('tracker-header').style.background = `linear-gradient(to right, ${c1}, ${c2})`;
+        }
+
+        function initTrackerUI() {
+            if (unsubscribeChar) unsubscribeChar();
+            resetTurnQueue();
+            updateRestUI(); 
+
+            const charRef = doc(db, "campaigns", currentCampaignId, "characters", currentCharacterId);
+            
+            unsubscribeChar = onSnapshot(charRef, (snapshot) => {
+                if (snapshot.exists()) {
+                    currentCharacterData = snapshot.data();
+                    renderTracker();
+                    renderTurnPreview(); 
+                } else {
+                    unsubscribeChar();
+                    currentCharacterId = null;
+                    loadCharacterMenu();
+                    showScreen('menu');
+                }
+            });
+        }
+
+        function renderTracker() {
+            const data = currentCharacterData;
+            applyCharacterTheme();
+
+            // Info
+            document.getElementById('char-name').innerText = data.name;
+            document.getElementById('char-subtext').innerText = `Lvl ${data.level || 1} ${data.species || ''} ${data.class || ''}`;
+            document.getElementById('char-school').innerText = data.school || 'Undeclared';
+            
+            if(data.portraitUrl) {
+                document.getElementById('portrait-img').src = data.portraitUrl;
+                document.getElementById('portrait-img').classList.remove('hidden');
+            } else {
+                document.getElementById('portrait-img').classList.add('hidden');
+            }
+
+            // Stats
+            document.getElementById('stat-ac').innerText = data.ac || 10;
+            const stats = ['str', 'dex', 'con', 'int', 'wis', 'cha'];
+            stats.forEach(s => {
+                const el = document.getElementById(`stat-${s}`);
+                if(el) el.innerText = data[s] || 10;
+            });
+
+            // Vitals
+            document.getElementById('hp-text').innerText = `${data.hp} / ${data.maxHp}`;
+            document.getElementById('mana-text').innerText = `${data.mana} / ${data.maxMana}`;
+            
+            const hpPct = Math.max(0, Math.min(100, (data.hp / data.maxHp) * 100));
+            document.getElementById('hp-fill').style.width = `${hpPct}%`;
+            
+            const manaPct = Math.max(0, Math.min(100, (data.mana / data.maxMana) * 100));
+            document.getElementById('mana-fill').style.width = `${manaPct}%`;
+
+            // Currency
+            if(data.currency) {
+                document.getElementById('curr-cp').value = data.currency.cp || 0;
+                document.getElementById('curr-sp').value = data.currency.sp || 0;
+                document.getElementById('curr-gp').value = data.currency.gp || 0;
+            }
+
+            // Notes
+            const notesEl = document.getElementById('char-notes');
+            if(document.activeElement !== notesEl) {
+                notesEl.value = data.notes || "";
+            }
+
+            renderAttacks();
+        }
+
+        // --- Turn Queue Logic ---
+        function resetTurnQueue() {
+            turnQueue = { hpChange: 0, manaChange: 0, spellsToCast: [] };
+            renderTurnPreview();
+            renderAttacks(); 
+        }
+
+        window.queueVital = function(type, amount) {
+            if(type === 'hp') turnQueue.hpChange += amount;
+            if(type === 'mana') turnQueue.manaChange += amount;
+            renderTurnPreview();
+        }
+
+        window.toggleSpellQueue = function(index) {
+            const spell = currentCharacterData.attacks[index];
+            const qIndex = turnQueue.spellsToCast.findIndex(s => s.index === index);
+
+            if (qIndex > -1) {
+                // Remove
+                turnQueue.manaChange += spell.manaCost; // Refund cost
+                turnQueue.spellsToCast.splice(qIndex, 1);
+            } else {
+                // Add
+                turnQueue.manaChange -= spell.manaCost; // Deduct cost
+                turnQueue.spellsToCast.push({ index, spell });
+            }
+            renderTurnPreview();
+            renderAttacks();
+        }
+
+        function renderTurnPreview() {
+            const previewPanel = document.getElementById('turn-preview-panel');
+            const data = currentCharacterData;
+
+            // Calculate projections
+            let projectedHp = data.hp + turnQueue.hpChange;
+            // Healing spells don't predict exact amounts yet, so we don't calculate them here
+            let projectedMana = data.mana + turnQueue.manaChange;
+
+            // Visual Fill logic (Ghosts)
+            const hpFill = document.getElementById('hp-fill');
+            const hpGhost = document.getElementById('hp-ghost');
+            
+            const currentHpPct = Math.max(0, Math.min(100, (data.hp / data.maxHp) * 100));
+            const projHpPct = Math.max(0, Math.min(100, (projectedHp / data.maxHp) * 100));
+
+            if (projectedHp < data.hp) {
+                // Damage: Ghost shows what will be lost
+                hpFill.style.width = `${projHpPct}%`;
+                hpGhost.style.left = `${projHpPct}%`;
+                hpGhost.style.width = `${currentHpPct - projHpPct}%`;
+                hpGhost.classList.replace('bg-green-400', 'bg-red-500');
+            } else if (projectedHp > data.hp) {
+                // Heal: Ghost shows what will be gained
+                hpFill.style.width = `${currentHpPct}%`;
+                hpGhost.style.left = `${currentHpPct}%`;
+                hpGhost.style.width = `${projHpPct - currentHpPct}%`;
+                hpGhost.classList.replace('bg-red-500', 'bg-green-400');
+            } else {
+                hpFill.style.width = `${currentHpPct}%`;
+                hpGhost.style.width = `0%`;
+            }
+
+            const manaFill = document.getElementById('mana-fill');
+            const manaGhost = document.getElementById('mana-ghost');
+            
+            const currentManaPct = Math.max(0, Math.min(100, (data.mana / data.maxMana) * 100));
+            const projManaPct = Math.max(0, Math.min(100, (projectedMana / data.maxMana) * 100));
+
+            if (projectedMana < data.mana) {
+                manaFill.style.width = `${projManaPct}%`;
+                manaGhost.style.left = `${projManaPct}%`;
+                manaGhost.style.width = `${currentManaPct - projManaPct}%`;
+                manaGhost.classList.replace('bg-blue-400', 'bg-red-500');
+            } else if (projectedMana > data.mana) {
+                manaFill.style.width = `${currentManaPct}%`;
+                manaGhost.style.left = `${currentManaPct}%`;
+                manaGhost.style.width = `${projManaPct - currentManaPct}%`;
+                manaGhost.classList.replace('bg-red-500', 'bg-blue-400');
+            } else {
+                manaFill.style.width = `${currentManaPct}%`;
+                manaGhost.style.width = `0%`;
+            }
+
+            // Summary text
+            let summaryParts = [];
+            if (turnQueue.hpChange !== 0) summaryParts.push(`${turnQueue.hpChange > 0 ? '+' : ''}${turnQueue.hpChange} HP`);
+            if (turnQueue.manaChange !== 0) summaryParts.push(`${turnQueue.manaChange > 0 ? '+' : ''}${turnQueue.manaChange} Mana`);
+            if (turnQueue.spellsToCast.length > 0) summaryParts.push(`${turnQueue.spellsToCast.length} Action(s)`);
+
+            if (summaryParts.length > 0) {
+                document.getElementById('turn-preview-text').innerText = summaryParts.join(' | ');
+                previewPanel.classList.remove('translate-y-full');
+            } else {
+                previewPanel.classList.add('translate-y-full');
+            }
+        }
+
+        window.cancelTurn = function() {
+            resetTurnQueue();
+        }
+
+        window.lockInTurn = function() {
+            if (turnQueue.spellsToCast.length > 0) {
+                // Go to resolution screen
+                renderExecuteScreen();
+                showScreen('execute');
+            } else {
+                // Just commit vitals
+                commitTurn();
+            }
+        }
+
+        function renderExecuteScreen() {
+            const container = document.getElementById('execute-spells-container');
+            container.innerHTML = '';
+
+            turnQueue.spellsToCast.forEach((item, i) => {
+                const s = item.spell;
+                const div = document.createElement('div');
+                div.className = 'bg-gray-800 p-4 rounded-xl border border-gray-700 mb-4';
+                div.innerHTML = `
+                    <div class="flex items-center gap-3 mb-3">
+                        <div class="w-10 h-10 rounded-full flex items-center justify-center text-white shadow-lg" style="background-color: ${s.color || '#3b82f6'}">
+                            <span class="material-icons">${s.icon || 'bolt'}</span>
+                        </div>
+                        <div>
+                            <h4 class="text-white font-bold">${s.name}</h4>
+                            <p class="text-xs text-gray-400">${s.diceAmount}d${s.diceType} ${s.damageType} ${s.isHeal ? '(Heal)' : ''}</p>
+                        </div>
+                    </div>
+                    <div class="flex items-center gap-2">
+                        <input type="number" id="roll-result-${i}" placeholder="Enter total roll..." class="w-full bg-gray-900 border border-gray-600 rounded-lg px-4 py-3 text-white focus:outline-none focus:border-[var(--char-c1)] text-center text-xl font-bold">
+                    </div>
+                `;
+                container.appendChild(div);
+            });
+        }
+
+        window.cancelExecute = function() {
+            showScreen('tracker');
+        }
+
+        window.commitExecute = function() {
+            // Apply spell effects if they target self (heals)
+            turnQueue.spellsToCast.forEach((item, i) => {
+                const s = item.spell;
+                if (s.isHeal) {
+                    const roll = parseInt(document.getElementById(`roll-result-${i}`).value) || 0;
+                    turnQueue.hpChange += roll;
+                }
+            });
+
+            commitTurn();
+            showScreen('tracker');
+        }
+
+        async function commitTurn() {
+            const data = currentCharacterData;
+            
+            // Calculate final values, bound by min/max
+            let newHp = Math.max(0, Math.min(data.maxHp, data.hp + turnQueue.hpChange));
+            let newMana = Math.max(0, Math.min(data.maxMana, data.mana + turnQueue.manaChange));
+
+            try {
+                await updateDocData({ hp: newHp, mana: newMana });
+                resetTurnQueue();
+            } catch (error) {
+                console.error("Error committing turn:", error);
+            }
+        }
+
+
+        function renderAttacks() {
+            const list = document.getElementById('attack-list');
+            list.innerHTML = '';
+            
+            const attacks = currentCharacterData.attacks || [];
+            
+            if (attacks.length === 0) {
+                list.innerHTML = '<div class="text-center text-gray-500 py-4 text-sm">No abilities scribed.</div>';
+                return;
+            }
+
+            // Calculate projected mana for checking affordance
+            const projectedMana = currentCharacterData.mana + turnQueue.manaChange;
+
+            attacks.forEach((atk, index) => {
+                const isQueued = turnQueue.spellsToCast.some(s => s.index === index);
+                
+                // Can we afford to queue this? (Check if not already queued)
+                const canAfford = isQueued || (projectedMana >= atk.manaCost);
+                
+                const cardClass = canAfford 
+                    ? (isQueued ? 'bg-[var(--char-c1)]/20 border-[var(--char-c1)]' : 'bg-gray-800 border-gray-700 hover:border-gray-500')
+                    : 'bg-gray-800/50 border-gray-800 opacity-50 grayscale';
+
+                const div = document.createElement('div');
+                div.className = `p-4 rounded-2xl border-2 flex items-center justify-between transition-all duration-300 ${cardClass}`;
+                
+                div.innerHTML = `
+                    <div class="flex items-center gap-4 flex-grow cursor-pointer" onclick="${canAfford ? `toggleSpellQueue(${index})` : ''}">
+                        <div class="w-12 h-12 rounded-full flex items-center justify-center text-white shadow-lg shrink-0 relative" style="background-color: ${atk.color || '#3b82f6'}">
+                            <span class="material-icons">${atk.icon || 'bolt'}</span>
+                            ${isQueued ? '<span class="absolute -top-1 -right-1 bg-green-500 rounded-full w-4 h-4 border-2 border-gray-900"></span>' : ''}
+                        </div>
+                        <div>
+                            <h3 class="font-bold text-white leading-tight ${isQueued ? 'text-[var(--char-c1)]' : ''}">${atk.name}</h3>
+                            <p class="text-xs text-gray-400 font-medium tracking-wide">
+                                Lvl ${atk.level} | ${atk.diceAmount}d${atk.diceType} ${atk.damageType} ${atk.isHeal ? '<span class="text-green-400">(Heal)</span>' : ''}
+                            </p>
+                        </div>
+                    </div>
+                    
+                    <div class="flex items-center gap-3 shrink-0 ml-2">
+                        <div class="bg-blue-900/40 px-3 py-1 rounded-lg border border-blue-800 text-center">
+                            <span class="block text-[10px] text-blue-300 font-bold uppercase tracking-wider -mb-1">Cost</span>
+                            <span class="text-lg font-black text-blue-400">${atk.manaCost}</span>
+                        </div>
+                        <button class="text-gray-600 hover:text-red-500 transition p-1" onclick="deleteAttack(${index})">
+                            <span class="material-icons text-xl">close</span>
+                        </button>
+                    </div>
+                `;
+                list.appendChild(div);
+            });
+        }
+
+        window.deleteAttack = async function(index) {
+            const currentAttacks = currentCharacterData.attacks || [];
+            currentAttacks.splice(index, 1);
+            
+            // If deleting a queued attack, reset queue
+            if(turnQueue.spellsToCast.some(s => s.index === index)) {
+                resetTurnQueue();
+            }
+
+            try {
+                await updateDocData({ attacks: currentAttacks });
+            } catch (error) {
+                console.error("Error deleting attack:", error);
+            }
+        }
+
+
+        // --- Rests & Round Logic ---
+        window.triggerNextRound = async function() {
+            if(!currentCharacterData) return;
+            const data = currentCharacterData;
+            
+            // Calculate half max mana
+            const regenLimit = Math.floor(data.maxMana / 2);
+            
+            // Only regen if below half max
+            if (data.mana < regenLimit) {
+                // Regen amount, but don't exceed the regenLimit
+                let newMana = Math.min(regenLimit, data.mana + (data.passiveRegen || 0));
+                await updateDocData({ mana: newMana });
+                
+                // Visual Feedback
+                const btn = document.getElementById('btn-next-round');
+                btn.classList.add('ring-4', 'ring-green-400');
+                setTimeout(() => btn.classList.remove('ring-4', 'ring-green-400'), 500);
+            }
+        }
+
+        window.promptShortRest = function() {
+             if (campaignState.shortRestsUsed >= 2) return;
+             showConfirm(
+                "Take a Short Rest?", 
+                "Uses 1 of 2 party short rests. Restores Mana to max for everyone. HP must be rolled manually.", 
+                "Rest (1 hr)", 
+                () => triggerSharedRest('short')
+             );
+        }
+
+        window.promptLongRest = function() {
+             showConfirm(
+                "Take a Long Rest?", 
+                "Fully restores HP and Mana for everyone, and resets short rest uses.", 
+                "Rest (8 hrs)", 
+                () => triggerSharedRest('long')
+             );
+        }
+
+        // --- Currency & Notes Sync ---
+        let typingTimer;
+        window.syncCurrency = function() {
+            clearTimeout(typingTimer);
+            typingTimer = setTimeout(async () => {
+                const currency = {
+                    cp: parseInt(document.getElementById('curr-cp').value) || 0,
+                    sp: parseInt(document.getElementById('curr-sp').value) || 0,
+                    gp: parseInt(document.getElementById('curr-gp').value) || 0
+                };
+                await updateDocData({ currency });
+            }, 1000);
+        }
+
+        window.syncNotes = function() {
+            clearTimeout(typingTimer);
+            typingTimer = setTimeout(async () => {
+                const notes = document.getElementById('char-notes').value;
+                await updateDocData({ notes });
+            }, 1000);
+        }
+
+        async function updateDocData(updates) {
+             if(!currentCampaignId || !currentCharacterId) return;
+             const charRef = doc(db, "campaigns", currentCampaignId, "characters", currentCharacterId);
+             try {
+                 await setDoc(charRef, updates, { merge: true });
+             } catch (error) {
+                 console.error("Update error:", error);
+             }
+        }
+        
+        window.exitTracker = function() {
+            if (unsubscribeChar) unsubscribeChar();
+            currentCharacterId = null;
+            currentCharacterData = null;
+            resetTurnQueue();
+            loadCharacterMenu();
+            showScreen('menu');
+        }
+
+        // --- Screen 5: Create Attack ---
+        function renderIconSelect() {
+            const container = document.getElementById('icon-selector-grid');
+            container.innerHTML = '';
+            const selectedInput = document.getElementById('attack-icon');
+
+            spellIcons.forEach(icon => {
+                const div = document.createElement('div');
+                div.className = `p-2 rounded-lg border-2 flex items-center justify-center cursor-pointer transition 
+                    ${selectedInput.value === icon ? 'border-[var(--char-c1)] bg-[var(--char-c1)]/30' : 'border-gray-700 bg-gray-800 hover:border-gray-500'}`;
+                div.innerHTML = `<span class="material-icons text-white">${icon}</span>`;
+                
+                div.addEventListener('click', () => {
+                    selectedInput.value = icon;
+                    renderIconSelect(); 
+                });
+                container.appendChild(div);
+            });
+            
+            if(!selectedInput.value && spellIcons.length > 0) selectedInput.value = spellIcons[0];
+        }
+
+        window.showCreateAttack = function() {
+            populateSpellSelector();
+            document.getElementById('form-attack').reset();
+            renderIconSelect();
+            document.getElementById('spell-creation-fields').classList.remove('hidden');
+            showScreen('attack');
+        }
+
+        window.cancelCreateAttack = function() {
+            showScreen('tracker');
+        }
+        
+        window.handleAttackSelection = function(e) {
+            const val = e.target.value;
+            const fields = document.getElementById('spell-creation-fields');
+            const preview = document.getElementById('spell-preview');
+            
+            if (val === 'new') {
+                fields.classList.remove('hidden');
+                preview.classList.add('hidden');
+                document.getElementById('form-attack').reset();
+                renderIconSelect();
+            } else {
+                fields.classList.add('hidden');
+                preview.classList.remove('hidden');
+                
+                const spell = availableSpells.find(s => s.id === val);
+                if(spell) {
+                    preview.innerHTML = `
+                        <div class="flex items-center gap-3">
+                            <div class="w-10 h-10 rounded-full flex items-center justify-center text-white shadow-lg" style="background-color: ${spell.color || '#3b82f6'}">
+                                <span class="material-icons">${spell.icon || 'bolt'}</span>
+                            </div>
+                            <div>
+                                <h4 class="text-white font-bold">${spell.name}</h4>
+                                <p class="text-xs text-gray-400">Cost: ${spell.manaCost} | ${spell.diceAmount}d${spell.diceType} ${spell.damageType}</p>
+                            </div>
+                        </div>
+                    `;
+                }
+            }
+        }
+
+        window.submitAttack = async function(e) {
+            e.preventDefault();
+            
+            const selectorVal = document.getElementById('attack-selector').value;
+            let spellToAdd = null;
+
+            if (selectorVal === 'new') {
+                spellToAdd = {
+                    name: document.getElementById('attack-name').value.trim(),
+                    level: parseInt(document.getElementById('attack-level').value) || 1,
+                    manaCost: parseInt(document.getElementById('attack-cost').value) || 0,
+                    diceAmount: parseInt(document.getElementById('attack-dice-amount').value) || 1,
+                    diceType: parseInt(document.getElementById('attack-dice-type').value) || 6,
+                    damageType: document.getElementById('attack-damage-type').value.trim(),
+                    isHeal: document.getElementById('attack-is-heal').checked,
+                    icon: document.getElementById('attack-icon').value,
+                    color: document.getElementById('attack-color').value
+                };
+
+                if (!spellToAdd.name) return;
+
+                try {
+                    const newSpellRef = doc(collection(db, "campaigns", currentCampaignId, "spells"));
+                    await setDoc(newSpellRef, spellToAdd);
+                    spellToAdd.id = newSpellRef.id;
+                    availableSpells.push(spellToAdd); 
+                } catch (err) {
+                    console.error("Failed to save new spell to db", err);
+                    return;
+                }
+            } else {
+                spellToAdd = availableSpells.find(s => s.id === selectorVal);
+                if (!spellToAdd) return;
+            }
+
+            const currentAttacks = currentCharacterData.attacks || [];
+            currentAttacks.push(spellToAdd);
+
+            try {
+                await updateDocData({ attacks: currentAttacks });
+                document.getElementById('form-attack').reset();
+                showScreen('tracker');
+            } catch (error) {
+                console.error("Error adding attack to character:", error);
+            }
+        }
+
+        // --- Initialization ---
+        // Starts at Campaign screen
+        loadCampaignMenu();
+
     </script>
+    <style>
+        .hide-scrollbar::-webkit-scrollbar { display: none; }
+        .hide-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+        
+        .bar-container {
+            position: relative;
+            height: 2.5rem;
+            background-color: rgba(31, 41, 55, 0.7);
+            border-radius: 999px;
+            overflow: hidden;
+            box-shadow: inset 0 2px 4px rgba(0,0,0,0.5);
+            border: 2px solid rgba(75, 85, 99, 0.5);
+            width: 100%;
+        }
+        
+        .bar-fill {
+            position: absolute;
+            top: 0;
+            left: 0;
+            height: 100%;
+            transition: width 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+            z-index: 10;
+        }
+
+        .bar-ghost {
+            position: absolute;
+            top: 0;
+            height: 100%;
+            transition: all 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+            z-index: 5;
+            opacity: 0.6;
+        }
+
+        .bar-text {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: bold;
+            text-shadow: 1px 1px 3px rgba(0,0,0,0.9);
+            pointer-events: none;
+            z-index: 20;
+        }
+
+        .icon-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(40px, 1fr));
+            gap: 8px;
+            max-height: 150px;
+            overflow-y: auto;
+        }
+
+        :root {
+            --char-c1: #3b82f6;
+            --char-c2: #1e3a8a;
+        }
+    </style>
+</head>
+<body class="min-h-screen flex flex-col items-center bg-gray-900 transition-colors duration-500">
+
+    <!-- Container scales up to tablet size, centers on desktop -->
+    <div class="w-full max-w-2xl relative min-h-screen flex flex-col shadow-2xl">
+        
+        <!-- ========================================= -->
+        <!-- SCREEN 0: CAMPAIGN MENU                   -->
+        <!-- ========================================= -->
+        <div id="screen-campaigns" class="w-full p-6 flex-grow flex flex-col">
+            <div class="text-center mb-10 pt-12">
+                <span class="material-icons text-7xl text-blue-500 mb-4 drop-shadow-[0_0_20px_rgba(59,130,246,0.6)]">public</span>
+                <h1 class="text-4xl font-extrabold tracking-tight text-white">Select Campaign</h1>
+                <p class="text-gray-400 mt-2 font-medium">Choose your adventure</p>
+            </div>
+
+            <div id="campaign-list" class="space-y-4 mb-8 flex-grow">
+                <!-- Campaigns injected here -->
+            </div>
+            
+            <button class="w-full py-4 bg-gray-800 text-gray-500 font-bold rounded-xl border border-gray-700 flex items-center justify-center gap-2 cursor-not-allowed">
+                <span class="material-icons">add</span> Create New Campaign (Coming Soon)
+            </button>
+        </div>
+
+        <!-- ========================================= -->
+        <!-- SCREEN 1: CHARACTER MENU                  -->
+        <!-- ========================================= -->
+        <div id="screen-menu" class="w-full hidden p-6 flex-grow flex flex-col">
+            <button onclick="backToCampaigns()" class="mb-4 text-gray-400 hover:text-white flex items-center gap-1 transition w-fit">
+                <span class="material-icons">arrow_back</span> Campaigns
+            </button>
+            
+            <div class="text-center mb-10 pt-4">
+                <span class="material-icons text-6xl text-purple-500 mb-4 drop-shadow-[0_0_15px_rgba(168,85,247,0.5)]">auto_stories</span>
+                <h1 id="menu-campaign-title" class="text-4xl font-extrabold tracking-tight bg-clip-text text-transparent bg-gradient-to-r from-blue-400 to-purple-500">Campaign Name</h1>
+                <p class="text-gray-400 mt-2 font-medium tracking-widest uppercase">Student Roster</p>
+            </div>
+
+            <div id="character-list" class="space-y-4 mb-8 flex-grow overflow-y-auto pr-2">
+                <!-- Characters injected here -->
+            </div>
+            
+            <button onclick="showCreate()" class="w-full py-5 bg-gradient-to-r from-blue-600 to-purple-600 hover:from-blue-500 hover:to-purple-500 text-white rounded-2xl font-bold text-lg shadow-xl shadow-purple-900/50 transition transform hover:-translate-y-1">
+                + Enroll New Student
+            </button>
+        </div>
+
+        <!-- ========================================= -->
+        <!-- SCREEN 2: AUTH MODAL                      -->
+        <!-- ========================================= -->
+        <div id="screen-auth" class="w-full hidden p-6 flex items-center justify-center bg-black/80 backdrop-blur-sm absolute inset-0 z-50">
+            <div class="bg-gray-800 p-8 rounded-3xl border border-gray-700 shadow-2xl w-full max-w-sm">
+                <div class="text-center mb-6">
+                    <div class="w-16 h-16 rounded-full bg-blue-900/50 flex items-center justify-center mx-auto mb-4">
+                        <span class="material-icons text-3xl text-blue-400">lock</span>
+                    </div>
+                    <h2 id="auth-title" class="text-2xl font-bold text-white">Access Sheet</h2>
+                    <p class="text-sm text-gray-400 mt-1">Enter character password</p>
+                </div>
+                
+                <input type="password" id="auth-password" class="w-full bg-gray-900 border border-gray-600 rounded-xl px-4 py-4 text-white focus:outline-none focus:border-blue-500 mb-2 text-center text-xl tracking-widest" placeholder="••••••••">
+                <p id="auth-error" class="text-red-400 text-sm text-center mb-6 hidden">Incorrect password.</p>
+                
+                <div class="flex gap-4">
+                    <button onclick="cancelAuth()" class="flex-1 py-4 bg-gray-700 hover:bg-gray-600 text-white rounded-xl transition font-medium">Cancel</button>
+                    <button id="btn-auth-submit" onclick="submitAuth()" class="flex-1 py-4 bg-blue-600 hover:bg-blue-500 text-white rounded-xl transition font-bold shadow-lg shadow-blue-900/50">Unlock</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- ========================================= -->
+        <!-- SCREEN 3: CREATE CHARACTER                -->
+        <!-- ========================================= -->
+        <div id="screen-create" class="w-full hidden p-6 overflow-y-auto bg-gray-900 absolute inset-0 z-40">
+            <h2 class="text-3xl font-extrabold mb-6 flex items-center gap-3 text-white">
+                <span class="material-icons text-purple-400 text-4xl">person_add</span> Enroll Student
+            </h2>
+            
+            <form id="form-create" onsubmit="submitCreate(event)" class="space-y-6 pb-8">
+                <!-- Basic Info -->
+                <div class="bg-gray-800 p-5 rounded-2xl border border-gray-700 space-y-4">
+                    <div>
+                        <label class="block text-sm text-gray-400 mb-1">Character Name</label>
+                        <input type="text" id="create-name" required class="w-full bg-gray-900 border border-gray-600 rounded-lg px-4 py-3 text-white focus:outline-none focus:border-purple-500">
+                    </div>
+                    <div>
+                        <label class="block text-sm text-gray-400 mb-1">Secret Password (To edit/delete later)</label>
+                        <input type="password" id="create-password" required class="w-full bg-gray-900 border border-gray-600 rounded-lg px-4 py-3 text-white focus:outline-none focus:border-purple-500">
+                    </div>
+                    <div>
+                        <label class="block text-sm text-gray-400 mb-1">Portrait Image URL (Optional)</label>
+                        <input type="url" id="create-portrait" class="w-full bg-gray-900 border border-gray-600 rounded-lg px-4 py-3 text-white focus:outline-none focus:border-purple-500" placeholder="https://...">
+                    </div>
+                </div>
+
+                <!-- Lore/Class -->
+                <div class="bg-gray-800 p-5 rounded-2xl border border-gray-700 grid grid-cols-2 gap-4">
+                    <div class="col-span-2">
+                        <label class="block text-sm text-gray-400 mb-1">Class</label>
+                        <input type="text" id="create-class" class="w-full bg-gray-900 border border-gray-600 rounded-lg px-4 py-3 text-white focus:outline-none focus:border-purple-500" placeholder="Wizard">
+                    </div>
+                    <div>
+                        <label class="block text-sm text-gray-400 mb-1">Species</label>
+                        <input type="text" id="create-species" class="w-full bg-gray-900 border border-gray-600 rounded-lg px-4 py-3 text-white focus:outline-none focus:border-purple-500" placeholder="Owlin">
+                    </div>
+                    <div>
+                        <label class="block text-sm text-gray-400 mb-1">School</label>
+                        <select id="create-school" class="w-full bg-gray-900 border border-gray-600 rounded-lg px-4 py-3 text-white focus:outline-none focus:border-purple-500">
+                            <option value="Lorehold">Lorehold</option>
+                            <option value="Prismari">Prismari</option>
+                            <option value="Quandrix">Quandrix</option>
+                            <option value="Silverquill">Silverquill</option>
+                            <option value="Witherbloom">Witherbloom</option>
+                        </select>
+                    </div>
+                    <div>
+                        <label class="block text-sm text-gray-400 mb-1">Level</label>
+                        <input type="number" id="create-level" value="1" min="1" max="20" class="w-full bg-gray-900 border border-gray-600 rounded-lg px-4 py-3 text-white focus:outline-none focus:border-purple-500">
+                    </div>
+                    <div>
+                        <label class="block text-sm text-gray-400 mb-1">Armor Class</label>
+                        <input type="number" id="create-ac" value="10" class="w-full bg-gray-900 border border-gray-600 rounded-lg px-4 py-3 text-white focus:outline-none focus:border-purple-500">
+                    </div>
+                </div>
+
+                <!-- Vitals & Reg -->
+                <div class="bg-gray-800 p-5 rounded-2xl border border-gray-700 grid grid-cols-2 gap-4">
+                    <div>
+                        <label class="block text-sm text-gray-400 mb-1">Max Health (HP)</label>
+                        <input type="number" id="create-hp" required class="w-full bg-gray-900 border border-gray-600 rounded-lg px-4 py-3 text-white focus:outline-none focus:border-red-500 text-center text-lg font-bold">
+                    </div>
+                    <div>
+                        <label class="block text-sm text-gray-400 mb-1">Max Mana</label>
+                        <input type="number" id="create-mana" required class="w-full bg-gray-900 border border-gray-600 rounded-lg px-4 py-3 text-white focus:outline-none focus:border-blue-500 text-center text-lg font-bold">
+                    </div>
+                    <div class="col-span-2">
+                        <label class="block text-sm text-gray-400 mb-1">Passive Mana Regen (Per Round)</label>
+                        <input type="number" id="create-regen" value="1" min="0" class="w-full bg-gray-900 border border-gray-600 rounded-lg px-4 py-3 text-white focus:outline-none focus:border-green-500 text-center text-lg font-bold">
+                        <p class="text-xs text-gray-500 mt-1 text-center">Regenerates up to half max mana.</p>
+                    </div>
+                </div>
+
+                <!-- Core Stats -->
+                <div class="bg-gray-800 p-5 rounded-2xl border border-gray-700">
+                    <label class="block text-sm text-gray-400 mb-3">Core Stats</label>
+                    <div class="grid grid-cols-3 gap-3">
+                        <div><label class="text-xs text-gray-500">STR</label><input type="number" id="create-str" value="10" class="w-full bg-gray-900 border border-gray-600 rounded px-2 py-1 text-white text-center"></div>
+                        <div><label class="text-xs text-gray-500">DEX</label><input type="number" id="create-dex" value="10" class="w-full bg-gray-900 border border-gray-600 rounded px-2 py-1 text-white text-center"></div>
+                        <div><label class="text-xs text-gray-500">CON</label><input type="number" id="create-con" value="10" class="w-full bg-gray-900 border border-gray-600 rounded px-2 py-1 text-white text-center"></div>
+                        <div><label class="text-xs text-gray-500">INT</label><input type="number" id="create-int" value="10" class="w-full bg-gray-900 border border-gray-600 rounded px-2 py-1 text-white text-center"></div>
+                        <div><label class="text-xs text-gray-500">WIS</label><input type="number" id="create-wis" value="10" class="w-full bg-gray-900 border border-gray-600 rounded px-2 py-1 text-white text-center"></div>
+                        <div><label class="text-xs text-gray-500">CHA</label><input type="number" id="create-cha" value="10" class="w-full bg-gray-900 border border-gray-600 rounded px-2 py-1 text-white text-center"></div>
+                    </div>
+                </div>
+
+                <!-- Theme -->
+                <div class="bg-gray-800 p-5 rounded-2xl border border-gray-700 flex justify-around items-center">
+                    <div class="text-center">
+                        <label class="block text-sm text-gray-400 mb-2">Primary Color</label>
+                        <input type="color" id="create-color1" value="#3b82f6" class="w-12 h-12 bg-gray-900 border border-gray-600 rounded-lg cursor-pointer p-1">
+                    </div>
+                    <div class="text-center">
+                        <label class="block text-sm text-gray-400 mb-2">Secondary Color</label>
+                        <input type="color" id="create-color2" value="#1e3a8a" class="w-12 h-12 bg-gray-900 border border-gray-600 rounded-lg cursor-pointer p-1">
+                    </div>
+                </div>
+
+                <div class="flex gap-4 pt-4">
+                    <button type="button" onclick="cancelCreate()" class="flex-1 py-4 bg-gray-700 hover:bg-gray-600 text-white rounded-xl transition font-medium">Cancel</button>
+                    <button type="submit" class="flex-[2] py-4 bg-purple-600 hover:bg-purple-500 text-white rounded-xl transition font-bold shadow-lg shadow-purple-900/50">Save Character</button>
+                </div>
+            </form>
+        </div>
+
+        <!-- ========================================= -->
+        <!-- SCREEN 4: THE TRACKER                     -->
+        <!-- ========================================= -->
+        <div id="screen-tracker" class="w-full hidden flex-col min-h-screen pb-40 transition-colors duration-500">
+            
+            <!-- Header (Themed) -->
+            <div id="tracker-header" class="px-6 py-8 rounded-b-[2.5rem] shadow-xl flex justify-between items-start transition-colors duration-500 relative z-20">
+                <div class="flex gap-4 items-center">
+                    <img id="portrait-img" src="" class="w-16 h-16 rounded-full object-cover border-4 border-white/20 shadow-lg hidden">
+                    <div>
+                        <h1 id="char-name" class="text-3xl font-black text-white drop-shadow-md leading-none">Name</h1>
+                        <p id="char-subtext" class="text-white/80 font-medium mt-1">Lvl 1 Student</p>
+                        <p id="char-school" class="text-white/60 text-xs font-bold uppercase tracking-wider mt-1">School</p>
+                    </div>
+                </div>
+                <button onclick="exitTracker()" class="text-white/70 hover:text-white bg-black/20 p-2 rounded-full backdrop-blur-sm transition">
+                    <span class="material-icons">logout</span>
+                </button>
+            </div>
+
+            <!-- Main Content Area -->
+            <div class="px-4 -mt-4 relative z-30 space-y-4">
+                
+                <!-- Core Setup Row -->
+                <div class="flex gap-2">
+                    <!-- AC Box -->
+                    <div class="bg-gray-800 p-4 rounded-3xl border border-gray-700 shadow-lg flex flex-col items-center justify-center shrink-0 w-24">
+                        <span class="material-icons text-gray-500 text-sm mb-1">shield</span>
+                        <span id="stat-ac" class="text-3xl font-black text-white">10</span>
+                        <span class="text-xs text-gray-400 font-medium">AC</span>
+                    </div>
+
+                    <!-- Round/Rest Controls -->
+                    <div class="bg-gray-800 p-2 rounded-3xl border border-gray-700 shadow-lg flex-grow grid grid-cols-3 gap-2 relative">
+                        <button id="btn-next-round" onclick="triggerNextRound()" class="flex flex-col items-center justify-center bg-gray-700/50 hover:bg-gray-600 rounded-2xl transition group p-2 relative">
+                            <span class="material-icons text-green-400 group-hover:scale-110 transition-transform">refresh</span>
+                            <span class="text-[10px] text-gray-400 font-semibold mt-1">Round</span>
+                            <span class="absolute top-1 right-1 flex h-2 w-2">
+                                <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75"></span>
+                                <span class="relative inline-flex rounded-full h-2 w-2 bg-green-500"></span>
+                            </span>
+                        </button>
+                        <button id="btn-short-rest" onclick="promptShortRest()" class="flex flex-col items-center justify-center bg-gray-700/50 hover:bg-gray-600 rounded-2xl transition group p-2 relative">
+                            <span class="material-icons text-yellow-400 group-hover:scale-110 transition-transform">local_cafe</span>
+                            <span class="text-[10px] text-gray-400 font-semibold mt-1">Short</span>
+                            <span id="rest-counter" class="absolute -top-2 -right-2 bg-gray-900 border-2 border-[var(--char-c1)] text-white text-[10px] font-bold px-1.5 py-0.5 rounded-full">2/2</span>
+                        </button>
+                        <button id="btn-long-rest" onclick="promptLongRest()" class="flex flex-col items-center justify-center bg-gray-700/50 hover:bg-gray-600 rounded-2xl transition group p-2">
+                            <span class="material-icons text-blue-400 group-hover:scale-110 transition-transform">bed</span>
+                            <span class="text-[10px] text-gray-400 font-semibold mt-1">Long</span>
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Stats Grid (Compact) -->
+                <div class="bg-gray-800/80 p-3 rounded-2xl border border-gray-700 flex justify-between px-4 shadow-inner">
+                    <div class="text-center"><span class="block text-[9px] text-gray-500 font-bold">STR</span><span id="stat-str" class="text-white font-medium">10</span></div>
+                    <div class="text-center"><span class="block text-[9px] text-gray-500 font-bold">DEX</span><span id="stat-dex" class="text-white font-medium">10</span></div>
+                    <div class="text-center"><span class="block text-[9px] text-gray-500 font-bold">CON</span><span id="stat-con" class="text-white font-medium">10</span></div>
+                    <div class="text-center"><span class="block text-[9px] text-gray-500 font-bold">INT</span><span id="stat-int" class="text-white font-medium">10</span></div>
+                    <div class="text-center"><span class="block text-[9px] text-gray-500 font-bold">WIS</span><span id="stat-wis" class="text-white font-medium">10</span></div>
+                    <div class="text-center"><span class="block text-[9px] text-gray-500 font-bold">CHA</span><span id="stat-cha" class="text-white font-medium">10</span></div>
+                </div>
+
+                <!-- Vitals Panel -->
+                <div class="bg-gray-800 p-5 rounded-3xl border border-[var(--char-c2)] shadow-2xl space-y-6">
+                    
+                    <!-- Health -->
+                    <div>
+                        <div class="flex justify-between items-end mb-2">
+                            <h2 class="text-red-400 font-black tracking-widest text-sm uppercase flex items-center gap-1">
+                                <span class="material-icons text-sm">favorite</span> Health
+                            </h2>
+                        </div>
+                        <div class="flex items-center gap-3">
+                            <button onclick="queueVital('hp', -1)" class="w-14 h-14 shrink-0 bg-red-900/30 hover:bg-red-900/50 text-red-500 rounded-2xl flex items-center justify-center text-3xl font-black transition active:scale-95">-</button>
+                            <div class="bar-container flex-grow">
+                                <div id="hp-ghost" class="bar-ghost bg-red-500 w-0"></div>
+                                <div id="hp-fill" class="bar-fill bg-red-600"></div>
+                                <div id="hp-text" class="bar-text text-white">10 / 10</div>
+                            </div>
+                            <button onclick="queueVital('hp', 1)" class="w-14 h-14 shrink-0 bg-green-900/30 hover:bg-green-900/50 text-green-500 rounded-2xl flex items-center justify-center text-3xl font-black transition active:scale-95">+</button>
+                        </div>
+                    </div>
+
+                    <!-- Mana -->
+                    <div>
+                        <div class="flex justify-between items-end mb-2">
+                            <h2 class="text-blue-400 font-black tracking-widest text-sm uppercase flex items-center gap-1">
+                                <span class="material-icons text-sm">water_drop</span> Mana
+                            </h2>
+                        </div>
+                        <div class="flex items-center gap-3">
+                            <button onclick="queueVital('mana', -1)" class="w-14 h-14 shrink-0 bg-red-900/30 hover:bg-red-900/50 text-red-500 rounded-2xl flex items-center justify-center text-3xl font-black transition active:scale-95">-</button>
+                            <div class="bar-container flex-grow">
+                                <div id="mana-ghost" class="bar-ghost bg-blue-400 w-0"></div>
+                                <div id="mana-fill" class="bar-fill bg-[var(--char-c1)]"></div>
+                                <div id="mana-text" class="bar-text text-white">5 / 5</div>
+                            </div>
+                            <button onclick="queueVital('mana', 1)" class="w-14 h-14 shrink-0 bg-blue-900/30 hover:bg-blue-900/50 text-blue-400 rounded-2xl flex items-center justify-center text-3xl font-black transition active:scale-95">+</button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Currency & Notes -->
+                <div class="bg-gray-800 p-4 rounded-3xl border border-gray-700 shadow-lg space-y-3">
+                    <div class="flex gap-2 justify-between">
+                        <div class="flex items-center bg-gray-900 rounded-lg px-2 py-1 flex-1 border border-yellow-700/50">
+                            <span class="text-yellow-500 font-bold text-xs mr-2">GP</span>
+                            <input type="number" id="curr-gp" oninput="syncCurrency()" class="w-full bg-transparent text-white font-mono text-right focus:outline-none">
+                        </div>
+                        <div class="flex items-center bg-gray-900 rounded-lg px-2 py-1 flex-1 border border-gray-400/50">
+                            <span class="text-gray-400 font-bold text-xs mr-2">SP</span>
+                            <input type="number" id="curr-sp" oninput="syncCurrency()" class="w-full bg-transparent text-white font-mono text-right focus:outline-none">
+                        </div>
+                        <div class="flex items-center bg-gray-900 rounded-lg px-2 py-1 flex-1 border border-orange-800/50">
+                            <span class="text-orange-500 font-bold text-xs mr-2">CP</span>
+                            <input type="number" id="curr-cp" oninput="syncCurrency()" class="w-full bg-transparent text-white font-mono text-right focus:outline-none">
+                        </div>
+                    </div>
+                    <textarea id="char-notes" oninput="syncNotes()" rows="2" class="w-full bg-gray-900 border border-gray-600 rounded-xl p-3 text-sm text-gray-300 focus:outline-none focus:border-[var(--char-c1)] resize-none" placeholder="Session notes, loot, etc..."></textarea>
+                </div>
+
+                <!-- Attacks List -->
+                <div class="mt-8 pb-10">
+                    <div class="flex justify-between items-center mb-4">
+                        <h2 class="text-xl font-extrabold text-white">Abilities</h2>
+                    </div>
+                    <div id="attack-list" class="space-y-3">
+                        <!-- Attacks injected here -->
+                    </div>
+                </div>
+
+            </div>
+
+            <!-- Floating Add Button -->
+            <button onclick="showCreateAttack()" class="fixed bottom-6 right-6 w-16 h-16 bg-[var(--char-c1)] text-white rounded-full flex items-center justify-center shadow-xl shadow-[var(--char-c1)]/40 hover:scale-105 transition-transform z-40">
+                <span class="material-icons text-3xl">add</span>
+            </button>
+
+            <!-- Turn Queue Preview Panel (Bottom Bar) -->
+            <div id="turn-preview-panel" class="fixed bottom-0 left-0 w-full bg-gray-900 border-t border-[var(--char-c1)] p-4 shadow-[0_-10px_40px_rgba(0,0,0,0.5)] transform translate-y-full transition-transform duration-300 z-50 flex items-center justify-between">
+                <div>
+                    <span class="text-xs text-[var(--char-c1)] font-bold uppercase tracking-wider block mb-1">Pending Actions</span>
+                    <span id="turn-preview-text" class="text-white font-mono font-medium"></span>
+                </div>
+                <div class="flex gap-2">
+                    <button onclick="cancelTurn()" class="p-3 bg-gray-800 text-gray-400 hover:text-white rounded-xl transition">
+                        <span class="material-icons">close</span>
+                    </button>
+                    <button onclick="lockInTurn()" class="px-6 py-3 bg-[var(--char-c1)] text-white font-bold rounded-xl shadow-lg transition active:scale-95 flex items-center gap-2">
+                        Lock In <span class="material-icons text-sm">check</span>
+                    </button>
+                </div>
+            </div>
+
+        </div>
+
+        <!-- ========================================= -->
+        <!-- SCREEN 5: CREATE ATTACK                   -->
+        <!-- ========================================= -->
+        <div id="screen-create-attack" class="w-full hidden p-6 overflow-y-auto bg-gray-900 absolute inset-0 z-50">
+            <h2 class="text-2xl font-bold mb-6 flex items-center gap-2 text-white">
+                <span class="material-icons text-[var(--char-c1)]">draw</span> Scribe Ability
+            </h2>
+            
+            <form id="form-attack" onsubmit="submitAttack(event)" class="bg-gray-800 p-6 rounded-2xl border border-[var(--char-c2)] space-y-5 shadow-xl">
+                
+                <div>
+                    <label class="block text-sm text-gray-400 mb-1">Select Existing or Create New</label>
+                    <select id="attack-selector" onchange="handleAttackSelection(event)" class="w-full bg-gray-900 border border-gray-600 rounded-lg px-4 py-3 text-white focus:outline-none focus:border-[var(--char-c1)] font-sans">
+                        <!-- Populated dynamically -->
+                    </select>
+                </div>
+
+                <!-- Preview for existing -->
+                <div id="spell-preview" class="hidden bg-gray-900 p-4 rounded-xl border border-gray-700">
+                    <!-- Populated dynamically -->
+                </div>
+
+                <div id="spell-creation-fields" class="space-y-5 border-t border-gray-700 pt-5">
+                    <div>
+                        <label class="block text-sm text-gray-400 mb-1">Ability Name</label>
+                        <input type="text" id="attack-name" class="w-full bg-gray-900 border border-gray-600 rounded-lg px-4 py-3 text-white focus:outline-none focus:border-[var(--char-c1)]" placeholder="e.g., Fireball">
+                    </div>
+
+                    <div class="grid grid-cols-2 gap-4">
+                        <div>
+                            <label class="block text-sm text-gray-400 mb-1">Level</label>
+                            <input type="number" id="attack-level" min="0" value="1" class="w-full bg-gray-900 border border-gray-600 rounded-lg px-4 py-3 text-white focus:outline-none focus:border-[var(--char-c1)]">
+                        </div>
+                        <div>
+                            <label class="block text-sm text-gray-400 mb-1">Mana Cost</label>
+                            <input type="number" id="attack-cost" min="0" value="1" class="w-full bg-gray-900 border border-gray-600 rounded-lg px-4 py-3 text-white focus:outline-none focus:border-[var(--char-c1)]">
+                        </div>
+                    </div>
+
+                    <div class="grid grid-cols-3 gap-4 border-t border-gray-700 pt-4">
+                        <div class="col-span-1">
+                            <label class="block text-sm text-gray-400 mb-1">Dice Qty</label>
+                            <input type="number" id="attack-dice-amount" min="1" value="1" class="w-full bg-gray-900 border border-gray-600 rounded-lg px-4 py-3 text-white focus:outline-none focus:border-[var(--char-c1)] text-center">
+                        </div>
+                        <div class="col-span-1">
+                            <label class="block text-sm text-gray-400 mb-1">Dice Type</label>
+                            <div class="relative">
+                                <span class="absolute left-3 top-3.5 text-gray-500 font-bold">d</span>
+                                <input type="number" id="attack-dice-type" min="2" step="2" value="8" class="w-full bg-gray-900 border border-gray-600 rounded-lg pl-8 pr-2 py-3 text-white focus:outline-none focus:border-[var(--char-c1)] text-center">
+                            </div>
+                        </div>
+                        <div class="col-span-1">
+                            <label class="block text-sm text-gray-400 mb-1">Type</label>
+                            <input type="text" id="attack-damage-type" class="w-full bg-gray-900 border border-gray-600 rounded-lg px-2 py-3 text-white focus:outline-none focus:border-[var(--char-c1)] text-center text-sm" placeholder="Fire">
+                        </div>
+                    </div>
+
+                    <div class="flex items-center gap-3 bg-gray-900 p-3 rounded-lg border border-gray-700">
+                        <input type="checkbox" id="attack-is-heal" class="w-5 h-5 accent-green-500 rounded bg-gray-800 border-gray-600">
+                        <label for="attack-is-heal" class="text-sm text-gray-300 font-medium">This ability restores Health</label>
+                    </div>
+
+                    <div class="border-t border-gray-700 pt-4">
+                        <div class="flex justify-between items-center mb-2">
+                            <label class="block text-sm text-gray-400">Select Icon</label>
+                            <div class="flex items-center gap-2">
+                                <label class="text-sm text-gray-400">Color</label>
+                                <input type="color" id="attack-color" value="#EF4444" class="w-8 h-8 bg-gray-900 border border-gray-600 rounded cursor-pointer p-0.5">
+                            </div>
+                        </div>
+                        <input type="hidden" id="attack-icon" value="">
+                        <div id="icon-selector-grid" class="icon-grid pr-2 hide-scrollbar">
+                            <!-- Populated dynamically -->
+                        </div>
+                    </div>
+                </div>
+
+                <div class="flex gap-4 mt-8 pt-4">
+                    <button type="button" onclick="cancelCreateAttack()" class="flex-1 py-4 bg-gray-700 hover:bg-gray-600 text-white rounded-xl transition font-medium">Cancel</button>
+                    <button type="submit" class="flex-[2] py-4 bg-[var(--char-c1)] hover:opacity-80 text-white rounded-xl transition font-bold shadow-lg shadow-[var(--char-c1)]/50">Add Ability</button>
+                </div>
+            </form>
+        </div>
+
+        <!-- ========================================= -->
+        <!-- SCREEN 6: EXECUTE ACTION / COMBAT ROLL    -->
+        <!-- ========================================= -->
+        <div id="screen-execute-action" class="w-full hidden p-6 overflow-y-auto bg-black/90 backdrop-blur-md absolute inset-0 z-50 flex flex-col">
+            <h2 class="text-3xl font-black mb-2 text-white text-center mt-8">Resolve Turn</h2>
+            <p class="text-gray-400 text-center mb-8">Roll your dice for the queued abilities.</p>
+            
+            <div id="execute-spells-container" class="space-y-4 flex-grow">
+                <!-- Spells injected here -->
+            </div>
+
+            <div class="flex gap-4 mt-8 pb-8">
+                <button onclick="cancelExecute()" class="flex-1 py-4 bg-gray-800 hover:bg-gray-700 text-white rounded-xl transition font-medium border border-gray-600">Back</button>
+                <button onclick="commitExecute()" class="flex-[2] py-4 bg-[var(--char-c1)] hover:opacity-80 text-white rounded-xl transition font-bold shadow-xl shadow-[var(--char-c1)]/30 text-lg">Confirm Results</button>
+            </div>
+        </div>
+
+        <!-- ========================================= -->
+        <!-- MODALS                                    -->
+        <!-- ========================================= -->
+        <div id="modal-confirm" class="w-full hidden p-6 flex items-center justify-center bg-black/70 backdrop-blur-sm absolute inset-0 z-[100]">
+            <div class="bg-gray-800 p-8 rounded-2xl border border-gray-700 shadow-2xl w-full max-w-sm text-center">
+                <div class="w-16 h-16 rounded-full bg-yellow-900/50 text-yellow-500 flex items-center justify-center mx-auto mb-4">
+                    <span class="material-icons text-3xl">warning</span>
+                </div>
+                <h2 id="confirm-title" class="text-2xl font-bold mb-2 text-white">Confirm Action</h2>
+                <p id="confirm-message" class="text-sm text-gray-400 mb-8">Are you sure you want to proceed?</p>
+                
+                <div class="flex gap-4 mt-8">
+                    <button onclick="hideConfirm()" class="flex-1 py-3 bg-gray-700 hover:bg-gray-600 text-white rounded-xl transition font-medium">Cancel</button>
+                    <button id="btn-confirm-action" onclick="executeConfirm()" class="flex-1 py-3 bg-blue-600 hover:bg-blue-500 text-white rounded-xl transition font-medium shadow-lg shadow-blue-900/50">Confirm</button>
+                </div>
+            </div>
+        </div>
+
+    </div>
 </body>
 </html>
