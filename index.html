@@ -9,7 +9,7 @@
     <!-- Material Icons -->
     <link href="https://fonts.googleapis.com/icon?family=Material+Icons" rel="stylesheet">
     <!-- Google Fonts -->
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;700;900&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@500;700;900&family=MedievalSharp&family=Inter:wght@400;500;700;900&display=swap" rel="stylesheet">
 
     <!-- Firebase SDK Modules -->
     <script type="module">
@@ -17,7 +17,7 @@
         import { getFirestore, doc, setDoc, getDoc, getDocs, onSnapshot, collection, deleteDoc } from "https://www.gstatic.com/firebasejs/10.8.1/firebase-firestore.js";
 
         // ==========================================
-        // PASTE YOUR FIREBASE CONFIG HERE
+        // FIREBASE CONFIG
         const firebaseConfig = {
             apiKey: "AIzaSyCzdZPMA379N6DEuZQpLJzh1hsUthsQhJ4",
             authDomain: "strixhaventracker.firebaseapp.com",
@@ -32,6 +32,7 @@
         const db = getFirestore(app);
 
         // Global State
+        let isGlobalAuthenticated = false;
         let currentCampaignId = null;
         let currentCharacterId = null;
         let currentCharacterData = null;
@@ -39,23 +40,37 @@
         let unsubscribeChar = null;
         let unsubscribeCampaign = null;
         let availableSpells = [];
+        let editOrigin = null; // 'menu' or 'tracker'
         
         // Turn State
         let turnQueue = {
             hpChange: 0,
             manaChange: 0,
+            staminaChange: 0,
             spellsToCast: []
         };
 
         // Predefined Spell Icons
         const spellIcons = [
+            // Elemental & Arcane
             'auto_fix_high', 'local_fire_department', 'ac_unit', 'bolt', 'water_drop', 
-            'flare', 'favorite', 'shield', 'healing', 'dark_mode', 'visibility', 
-            'hurricane', 'cyclone', 'waves', 'volcano', 'wb_sunny', 'nightlight'
+            'flare', 'dark_mode', 'visibility', 'hurricane', 'cyclone', 'waves', 'volcano', 
+            'wb_sunny', 'nightlight', 'electric_bolt', 'whatshot', 'offline_bolt', 'stars', 
+            'brightness_7', 'flash_on', 'lens_blur', 'grain', 'auto_awesome',
+            // Healing, Life & Nature
+            'favorite', 'healing', 'spa', 'eco', 'opacity', 'bloodtype', 'medical_services', 
+            'vaccine', 'cruelty_free', 'nature',
+            // Combat, Armor & Weapons
+            'shield', 'shield_moon', 'security', 'privacy_tip', 'gavel', 'fort', 'castle',
+            // Magic Relics, Necromancy & Alchemy
+            'skull', 'diamond', 'church', 'lightbulb', 'science', 'fireplace', 'hardware',
+            'psychology', 'explore', 'fitness_center', 'center_focus_strong', 'key', 
+            'fingerprint', 'pest_control', 'military_tech'
         ];
 
         // UI Elements
         const screens = {
+            globalAuth: document.getElementById('screen-global-auth'),
             campaigns: document.getElementById('screen-campaigns'),
             menu: document.getElementById('screen-menu'),
             auth: document.getElementById('screen-auth'),
@@ -70,46 +85,110 @@
         let confirmAction = null;
 
         let pendingAuthId = null;
-        let pendingAuthAction = null; // 'login' or 'delete'
+        let pendingAuthAction = null; // 'login', 'delete', or 'edit'
 
         // --- Navigation Helpers ---
+        const screenIdMap = {
+            globalAuth: 'screen-global-auth',
+            campaigns: 'screen-campaigns',
+            menu: 'screen-menu',
+            auth: 'screen-auth',
+            create: 'screen-create',
+            tracker: 'screen-tracker',
+            attack: 'screen-create-attack',
+            execute: 'screen-execute-action',
+            dmCompendium: 'screen-dm-compendium'
+        };
+
         function showScreen(screenName) {
-            Object.values(screens).forEach(s => s.classList.add('hidden'));
-            screens[screenName].classList.remove('hidden');
+            Object.values(screenIdMap).forEach(id => {
+                const el = document.getElementById(id);
+                if (el) el.classList.add('hidden');
+            });
+            
+            // Hide any active modal overlays when switching screens
+            ['modal-confirm', 'modal-dice-simulator', 'modal-create-category', 'modal-create-item'].forEach(mId => {
+                const m = document.getElementById(mId);
+                if (m) m.classList.add('hidden');
+            });
+
+            const targetId = screenIdMap[screenName] || screenName;
+            const targetEl = document.getElementById(targetId);
+            if (targetEl) {
+                targetEl.classList.remove('hidden');
+                window.scrollTo(0, 0);
+            }
             
             // Adjust body background based on screen context
             if (screenName === 'tracker' && currentCharacterData) {
                 applyCharacterTheme();
             } else {
-                document.body.style.background = '';
-                document.getElementById('tracker-header').style.background = '';
+                document.body.style.background = 'linear-gradient(-45deg, #090d16, #111827, #1e1b4b, #0f172a)';
+                document.body.style.backgroundSize = '400% 400%';
+                document.body.style.animation = 'auraShift 15s ease infinite';
+                const header = document.getElementById('tracker-header');
+                if(header) header.style.background = '';
             }
         }
+        window.showScreen = showScreen;
 
         function showConfirm(title, message, actionText, actionCallback) {
-            document.getElementById('confirm-title').innerText = title;
-            document.getElementById('confirm-message').innerText = message;
-            const btn = document.getElementById('btn-confirm-action');
-            btn.innerText = actionText;
-            
-            confirmAction = actionCallback;
-            confirmModal.classList.remove('hidden');
+            const modal = document.getElementById('modal-confirm');
+            if (modal) {
+                document.getElementById('confirm-title').innerText = title;
+                document.getElementById('confirm-message').innerText = message;
+                const btn = document.getElementById('btn-confirm-action');
+                if (btn) btn.innerText = actionText;
+                
+                confirmAction = actionCallback;
+                modal.classList.remove('hidden');
+            }
         }
+        window.showConfirm = showConfirm;
 
         function hideConfirm() {
-            confirmModal.classList.add('hidden');
+            const modal = document.getElementById('modal-confirm');
+            if (modal) modal.classList.add('hidden');
             confirmAction = null;
         }
-
         window.hideConfirm = hideConfirm;
-        window.executeConfirm = () => {
-            if (confirmAction) confirmAction();
+
+        window.executeConfirm = async () => {
+            if (confirmAction) {
+                const cb = confirmAction;
+                confirmAction = null;
+                await cb();
+            }
             hideConfirm();
         };
+
+        // --- Screen -1: Global Gatekeeper ---
+        window.submitGlobalAuth = function(e) {
+            if (e) e.preventDefault();
+            const inputEl = document.getElementById('global-password');
+            const pass = inputEl ? inputEl.value : '';
+            const cleanPass = pass.trim().toLowerCase();
+            
+            if (cleanPass === 'password123' || cleanPass === 'password') {
+                isGlobalAuthenticated = true;
+                try {
+                    sessionStorage.setItem('strixhaven_global_auth', 'true');
+                } catch(err) {}
+                loadCampaignMenu();
+            } else {
+                const errEl = document.getElementById('global-auth-error');
+                if (errEl) errEl.classList.remove('hidden');
+            }
+        }
 
 
         // --- Screen 0: Campaign Selection ---
         window.loadCampaignMenu = function() {
+            if(!isGlobalAuthenticated) {
+                showScreen('globalAuth');
+                return;
+            }
+
             const listEl = document.getElementById('campaign-list');
             listEl.innerHTML = '';
             
@@ -132,9 +211,13 @@
                 loadCharacterMenu();
                 initCampaignSync();
                 loadSpells();
+                loadItems();
                 showScreen('menu');
             });
             listEl.appendChild(btn);
+
+            // Actually show the screen after loading the buttons
+            showScreen('campaigns');
         }
 
         window.backToCampaigns = function() {
@@ -195,11 +278,17 @@
              const data = currentCharacterData;
              
              if (type === 'short') {
-                 // Short rest: Restore mana up to max
-                 updateDocData({ mana: data.maxMana });
+                 // Short rest: Recover 25% of max mana and 25% of max stamina (at least 1)
+                 const manaGain = Math.max(1, Math.ceil((data.maxMana || 0) * 0.25));
+                 const newMana = Math.min(data.maxMana || 0, (data.mana || 0) + manaGain);
+
+                 const staminaGain = Math.max(1, Math.ceil((data.maxStamina || 10) * 0.25));
+                 const newStamina = Math.min(data.maxStamina || 10, (data.stamina !== undefined ? data.stamina : (data.maxStamina || 10)) + staminaGain);
+
+                 updateDocData({ mana: newMana, stamina: newStamina });
              } else if (type === 'long') {
-                 // Long rest: Restore HP and Mana to max
-                 updateDocData({ hp: data.maxHp, mana: data.maxMana });
+                 // Long rest: Restore HP, Mana, and Stamina to max
+                 updateDocData({ hp: data.maxHp, mana: data.maxMana, stamina: data.maxStamina || 10 });
              }
         }
 
@@ -219,7 +308,34 @@
             }
         }
 
-        // --- Spell Database Sync ---
+        // --- Inventory & Items State & Sync ---
+        let availableSharedItems = [];
+        let selectedInventoryCategory = 'all';
+
+        const DEFAULT_INVENTORY_CATEGORIES = [
+            { id: "armour", name: "Armour", icon: "shield", color: "#3b82f6" },
+            { id: "weapons", name: "Weapons", icon: "key", color: "#ef4444" },
+            { id: "potions", name: "Potions", icon: "science", color: "#10b981" },
+            { id: "scrolls", name: "Scrolls", icon: "description", color: "#f59e0b" },
+            { id: "items", name: "Items", icon: "inventory_2", color: "#8b5cf6" }
+        ];
+
+        const RARITY_META = {
+            common: { name: 'Common', border: 'border-slate-500/60', text: 'text-slate-300', bg: 'bg-slate-900/80' },
+            uncommon: { name: 'Uncommon', border: 'border-emerald-500/60', text: 'text-emerald-400', bg: 'bg-emerald-950/30' },
+            rare: { name: 'Rare', border: 'border-sky-500/60', text: 'text-sky-400', bg: 'bg-sky-950/30' },
+            very_rare: { name: 'Very Rare', border: 'border-purple-500/60', text: 'text-purple-400', bg: 'bg-purple-950/30' },
+            legendary: { name: 'Legendary', border: 'border-amber-400', text: 'text-amber-300', bg: 'bg-amber-950/40 shadow-[0_0_12px_rgba(212,175,55,0.3)]' },
+            artifact: { name: 'Artifact', border: 'border-rose-500', text: 'text-rose-400', bg: 'bg-rose-950/40 shadow-[0_0_15px_rgba(244,63,94,0.4)]' }
+        };
+
+        const categoryIconOptions = [
+            'shield', 'sports_iterable', 'science', 'description', 'inventory_2', 
+            'auto_awesome', 'diamond', 'ring_volume', 'card_giftcard', 'wine_bar', 
+            'key', 'workspace_premium', 'medical_services', 'fitness_center'
+        ];
+
+        // --- Spell & Items Database Sync ---
         async function loadSpells() {
             if (!currentCampaignId) return;
             try {
@@ -236,11 +352,191 @@
 
         function populateSpellSelector() {
             const select = document.getElementById('attack-selector');
+            if(!select) return;
             select.innerHTML = '<option value="new">-- Create New Ability --</option>';
             
             availableSpells.forEach(spell => {
                 select.innerHTML += `<option value="${spell.id}">${spell.name} (Lvl ${spell.level})</option>`;
             });
+        }
+
+        async function loadItems() {
+            if (!currentCampaignId) return;
+            try {
+                const querySnapshot = await getDocs(collection(db, "campaigns", currentCampaignId, "items"));
+                availableSharedItems = [];
+                querySnapshot.forEach((doc) => {
+                    availableSharedItems.push({ id: doc.id, ...doc.data() });
+                });
+                populateItemSelector();
+            } catch (error) {
+                console.error("Error loading items catalog:", error);
+            }
+        }
+
+        function populateItemSelector() {
+            const select = document.getElementById('item-selector');
+            if (!select) return;
+            select.innerHTML = '<option value="new">-- Create Custom Item --</option>';
+            
+            availableSharedItems.forEach(item => {
+                const rarityLabel = RARITY_META[item.rarity]?.name || 'Item';
+                select.innerHTML += `<option value="${item.id}">${item.name} (${rarityLabel})</option>`;
+            });
+        }
+
+        // --- DM Compendium Catalog Management ---
+        let activeDMTab = 'spells';
+
+        async function showDMCompendium() {
+            await loadSpells();
+            await loadItems();
+            showScreen('dmCompendium');
+            renderDMCompendium();
+        }
+        window.showDMCompendium = showDMCompendium;
+
+        function switchDMTab(tab) {
+            activeDMTab = tab;
+            const btnSpells = document.getElementById('dm-tab-spells');
+            const btnItems = document.getElementById('dm-tab-items');
+            const viewSpells = document.getElementById('dm-view-spells');
+            const viewItems = document.getElementById('dm-view-items');
+
+            if (tab === 'spells') {
+                btnSpells.className = "flex-1 py-2.5 rounded-xl font-serif font-bold text-sm transition bg-amber-400 text-slate-950 shadow-md";
+                btnItems.className = "flex-1 py-2.5 rounded-xl font-serif font-bold text-sm transition text-amber-200/80 hover:text-white";
+                viewSpells.classList.remove('hidden');
+                viewItems.classList.add('hidden');
+            } else {
+                btnItems.className = "flex-1 py-2.5 rounded-xl font-serif font-bold text-sm transition bg-amber-400 text-slate-950 shadow-md";
+                btnSpells.className = "flex-1 py-2.5 rounded-xl font-serif font-bold text-sm transition text-amber-200/80 hover:text-white";
+                viewItems.classList.remove('hidden');
+                viewSpells.classList.add('hidden');
+            }
+            renderDMCompendium();
+        }
+        window.switchDMTab = switchDMTab;
+
+        function renderDMCompendium() {
+            if (activeDMTab === 'spells') {
+                const spellsList = document.getElementById('dm-spells-list');
+                if (!spellsList) return;
+                spellsList.innerHTML = '';
+
+                const searchEl = document.getElementById('dm-spells-search-input');
+                const query = searchEl ? searchEl.value.trim().toLowerCase() : '';
+
+                let filteredSpells = availableSpells.filter(spell => {
+                    return !query || (spell.name || '').toLowerCase().includes(query) || (spell.description || '').toLowerCase().includes(query);
+                });
+
+                // Alphabetical sort by name
+                filteredSpells.sort((a, b) => (a.name || '').localeCompare(b.name || '', undefined, { sensitivity: 'base' }));
+
+                if (filteredSpells.length === 0) {
+                    spellsList.innerHTML = `<div class="text-center text-amber-200/50 py-8 font-serif text-sm border border-dashed border-amber-900/30 rounded-2xl">${query ? 'No spells match your search.' : 'No spells registered in campaign catalog yet.'}</div>`;
+                    return;
+                }
+
+                filteredSpells.forEach(spell => {
+                    const card = document.createElement('div');
+                    card.className = "p-4 rounded-2xl border border-amber-900/40 bg-slate-900/90 shadow-md flex items-center justify-between";
+                    card.innerHTML = `
+                        <div class="flex items-center gap-3">
+                            <div class="w-10 h-10 rounded-xl flex items-center justify-center text-white shrink-0 border border-amber-500/30 shadow-md" style="background-color: ${spell.color || '#3b82f6'}">
+                                <span class="material-icons text-xl">${spell.icon || 'bolt'}</span>
+                            </div>
+                            <div>
+                                <h4 class="font-serif font-bold text-white text-base leading-tight">${spell.name}</h4>
+                                <p class="text-xs text-amber-200/70 mt-0.5">Lvl ${spell.level} | Mana: ${spell.manaCost || 0} | Stam: ${spell.staminaCost || 0} | ${formatSpellDice(spell)}</p>
+                            </div>
+                        </div>
+                        <button onclick="promptDeleteCatalogSpell('${spell.id}', '${spell.name}')" class="text-gray-500 hover:text-rose-400 p-1.5 transition">
+                            <span class="material-icons text-xl">delete</span>
+                        </button>
+                    `;
+                    spellsList.appendChild(card);
+                });
+            } else {
+                const itemsList = document.getElementById('dm-items-list');
+                if (!itemsList) return;
+                itemsList.innerHTML = '';
+
+                const searchEl = document.getElementById('dm-items-search-input');
+                const query = searchEl ? searchEl.value.trim().toLowerCase() : '';
+
+                let filteredItems = availableSharedItems.filter(item => {
+                    return !query || (item.name || '').toLowerCase().includes(query) || (item.description || '').toLowerCase().includes(query);
+                });
+
+                // Alphabetical sort by name
+                filteredItems.sort((a, b) => (a.name || '').localeCompare(b.name || '', undefined, { sensitivity: 'base' }));
+
+                if (filteredItems.length === 0) {
+                    itemsList.innerHTML = `<div class="text-center text-amber-200/50 py-8 font-serif text-sm border border-dashed border-amber-900/30 rounded-2xl">${query ? 'No items match your search.' : 'No items registered in campaign catalog yet.'}</div>`;
+                    return;
+                }
+
+                filteredItems.forEach(item => {
+                    const rarityInfo = RARITY_META[item.rarity || 'common'] || RARITY_META.common;
+                    const card = document.createElement('div');
+                    card.className = `p-4 rounded-2xl border ${rarityInfo.border} ${rarityInfo.bg} shadow-md flex items-center justify-between`;
+                    card.innerHTML = `
+                        <div class="flex items-center gap-3">
+                            <div class="w-10 h-10 rounded-xl flex items-center justify-center text-white shrink-0 bg-slate-800 border border-amber-500/30 shadow-md">
+                                <span class="material-icons text-xl text-amber-400">inventory_2</span>
+                            </div>
+                            <div>
+                                <h4 class="font-serif font-bold text-white text-base leading-tight">${item.name}</h4>
+                                <div class="flex items-center gap-2 mt-0.5">
+                                    <span class="text-[10px] font-serif font-bold uppercase tracking-wider ${rarityInfo.text}">${rarityInfo.name}</span>
+                                    <span class="text-[10px] text-amber-200/60 font-mono">• ${item.weight || 0} lbs</span>
+                                </div>
+                            </div>
+                        </div>
+                        <button onclick="promptDeleteCatalogItem('${item.id}', '${item.name}')" class="text-gray-500 hover:text-rose-400 p-1.5 transition">
+                            <span class="material-icons text-xl">delete</span>
+                        </button>
+                    `;
+                    itemsList.appendChild(card);
+                });
+            }
+        }
+        window.renderDMCompendium = renderDMCompendium;
+
+        window.promptDeleteCatalogSpell = function(spellId, name) {
+            showConfirm(
+                "Delete Spell from Catalog?",
+                `Are you sure you want to permanently delete '${name}' from the campaign catalog?`,
+                "Delete",
+                async () => {
+                    try {
+                        await deleteDoc(doc(db, "campaigns", currentCampaignId, "spells", spellId));
+                        await loadSpells();
+                        renderDMCompendium();
+                    } catch (err) {
+                        console.error("Failed to delete catalog spell:", err);
+                    }
+                }
+            );
+        }
+
+        window.promptDeleteCatalogItem = function(itemId, name) {
+            showConfirm(
+                "Delete Item from Catalog?",
+                `Are you sure you want to permanently delete '${name}' from the campaign catalog?`,
+                "Delete",
+                async () => {
+                    try {
+                        await deleteDoc(doc(db, "campaigns", currentCampaignId, "items", itemId));
+                        await loadItems();
+                        renderDMCompendium();
+                    } catch (err) {
+                        console.error("Failed to delete catalog item:", err);
+                    }
+                }
+            );
         }
 
 
@@ -282,10 +578,13 @@
                             </div>
                         </div>
                         <div class="flex gap-2">
-                            <button class="p-2 bg-gray-700 hover:bg-gray-600 rounded-lg text-white transition" onclick="promptAuth('${docSnap.id}', 'login')">
+                            <button class="p-2 bg-gray-700 hover:bg-gray-600 rounded-lg text-white transition" onclick="promptAuth('${docSnap.id}', 'login')" title="Log In">
                                 <span class="material-icons text-xl">login</span>
                             </button>
-                            <button class="p-2 bg-red-900/30 hover:bg-red-900/50 text-red-500 rounded-lg transition" onclick="promptAuth('${docSnap.id}', 'delete')">
+                            <button class="p-2 bg-blue-900/30 hover:bg-blue-900/50 text-blue-400 rounded-lg transition" onclick="promptAuth('${docSnap.id}', 'edit')" title="Edit Student">
+                                <span class="material-icons text-xl">edit</span>
+                            </button>
+                            <button class="p-2 bg-red-900/30 hover:bg-red-900/50 text-red-500 rounded-lg transition" onclick="promptAuth('${docSnap.id}', 'delete')" title="Delete Student">
                                 <span class="material-icons text-xl">delete</span>
                             </button>
                         </div>
@@ -311,6 +610,10 @@
                 title.innerText = "Authorize Deletion";
                 submitBtn.innerText = "Delete Permanently";
                 submitBtn.className = "w-full py-4 bg-red-600 hover:bg-red-500 text-white rounded-xl font-bold shadow-lg transition";
+            } else if (action === 'edit') {
+                title.innerText = "Authorize Edit";
+                submitBtn.innerText = "Access Records";
+                submitBtn.className = "w-full py-4 bg-purple-600 hover:bg-purple-500 text-white rounded-xl font-bold shadow-lg transition";
             } else {
                 title.innerText = "Access Sheet";
                 submitBtn.innerText = "Unlock";
@@ -343,6 +646,10 @@
                             pendingAuthId = null;
                             loadCharacterMenu();
                             showScreen('menu');
+                        } else if (pendingAuthAction === 'edit') {
+                            currentCharacterId = pendingAuthId;
+                            currentCharacterData = charData;
+                            showEditCharacter();
                         } else {
                             currentCharacterId = pendingAuthId;
                             currentCharacterData = charData;
@@ -358,14 +665,64 @@
             }
         }
 
-        // --- Screen 3: Create Character ---
+        // --- Screen 3: Create / Edit Character ---
         window.showCreate = function() {
+            editOrigin = 'menu';
             document.getElementById('form-create').reset();
+            document.getElementById('create-screen-title').innerHTML = '<span class="material-icons text-purple-400 text-4xl">person_add</span> Enroll Student';
+            document.getElementById('btn-create-submit').innerText = "Save Character";
+            currentCharacterId = null; // Ensure we are creating, not editing
+            showScreen('create');
+        }
+
+        window.showEditCharacterFromTracker = function() {
+            if(!currentCharacterData || !currentCharacterId) return;
+            editOrigin = 'tracker';
+            showEditCharacter();
+        }
+
+        window.showEditCharacter = function() {
+            if(!currentCharacterData) return;
+            const data = currentCharacterData;
+            
+            document.getElementById('create-screen-title').innerHTML = '<span class="material-icons text-purple-400 text-4xl">manage_accounts</span> Edit Records';
+            document.getElementById('btn-create-submit').innerText = "Update Records";
+
+            document.getElementById('create-name').value = data.name || '';
+            document.getElementById('create-password').value = data.password || '';
+            document.getElementById('create-portrait').value = data.portraitUrl || '';
+            document.getElementById('create-class').value = data.class || '';
+            document.getElementById('create-species').value = data.species || '';
+            document.getElementById('create-school').value = data.school || 'Lorehold';
+            document.getElementById('create-level').value = data.level || 1;
+            document.getElementById('create-ac').value = data.ac || 10;
+            document.getElementById('create-hp').value = data.maxHp || 10;
+            document.getElementById('create-mana').value = data.maxMana || 5;
+            document.getElementById('create-stamina').value = data.maxStamina || 10;
+            document.getElementById('create-regen').value = data.passiveRegen || 1;
+            document.getElementById('create-stamina-regen').value = data.staminaRegen !== undefined ? data.staminaRegen : 2;
+            document.getElementById('create-str').value = data.str || 10;
+            document.getElementById('create-dex').value = data.dex || 10;
+            document.getElementById('create-con').value = data.con || 10;
+            document.getElementById('create-int').value = data.int || 10;
+            document.getElementById('create-wis').value = data.wis || 10;
+            document.getElementById('create-cha').value = data.cha || 10;
+            document.getElementById('create-color1').value = data.color1 || '#3b82f6';
+            document.getElementById('create-color2').value = data.color2 || '#1e3a8a';
+
             showScreen('create');
         }
 
         window.cancelCreate = function() {
-            showScreen('menu');
+            if (editOrigin === 'tracker' && currentCharacterId) {
+                editOrigin = null;
+                showScreen('tracker');
+            } else {
+                editOrigin = null;
+                currentCharacterId = null;
+                currentCharacterData = null;
+                showScreen('menu');
+            }
         }
 
         window.submitCreate = async function(e) {
@@ -376,16 +733,17 @@
             const password = document.getElementById('create-password').value;
             if (!name || !password) return;
 
-            const id = name.toLowerCase().replace(/[^a-z0-9]/g, '-') + '-' + Math.floor(Math.random() * 1000);
+            // Generate ID only if new, otherwise reuse
+            const id = currentCharacterId || (name.toLowerCase().replace(/[^a-z0-9]/g, '-') + '-' + Math.floor(Math.random() * 1000));
 
-            const newChar = {
+            const charData = {
                 name: name,
                 password: password,
                 maxHp: parseInt(document.getElementById('create-hp').value) || 10,
-                hp: parseInt(document.getElementById('create-hp').value) || 10,
                 maxMana: parseInt(document.getElementById('create-mana').value) || 5,
-                mana: parseInt(document.getElementById('create-mana').value) || 5,
+                maxStamina: parseInt(document.getElementById('create-stamina').value) || 10,
                 passiveRegen: parseInt(document.getElementById('create-regen').value) || 1,
+                staminaRegen: parseInt(document.getElementById('create-stamina-regen').value) || 2,
                 color1: document.getElementById('create-color1').value,
                 color2: document.getElementById('create-color2').value,
                 class: document.getElementById('create-class').value.trim(),
@@ -399,19 +757,48 @@
                 int: parseInt(document.getElementById('create-int').value) || 10,
                 wis: parseInt(document.getElementById('create-wis').value) || 10,
                 cha: parseInt(document.getElementById('create-cha').value) || 10,
-                portraitUrl: document.getElementById('create-portrait').value.trim(),
-                currency: { cp: 0, sp: 0, gp: 0 },
-                notes: "",
-                attacks: []
+                portraitUrl: document.getElementById('create-portrait').value.trim()
             };
 
+            // If it's a new character, set default vitals and empty arrays
+            if(!currentCharacterId) {
+                charData.hp = charData.maxHp;
+                charData.mana = charData.maxMana;
+                charData.stamina = charData.maxStamina;
+                charData.currency = { cp: 0, sp: 0, gp: 0 };
+                charData.notes = "";
+                charData.attacks = [];
+            } else {
+                if(currentCharacterData && currentCharacterData.hp > charData.maxHp) {
+                    charData.hp = charData.maxHp;
+                }
+                if(currentCharacterData && currentCharacterData.mana > charData.maxMana) {
+                    charData.mana = charData.maxMana;
+                }
+                if(currentCharacterData && currentCharacterData.stamina > charData.maxStamina) {
+                    charData.stamina = charData.maxStamina;
+                }
+            }
+
+
             try {
-                await setDoc(doc(db, "campaigns", currentCampaignId, "characters", id), newChar);
+                await setDoc(doc(db, "campaigns", currentCampaignId, "characters", id), charData, { merge: true });
                 document.getElementById('form-create').reset();
-                loadCharacterMenu();
-                showScreen('menu');
+                if (editOrigin === 'tracker' && id) {
+                    currentCharacterId = id;
+                    currentCharacterData = { ...currentCharacterData, ...charData };
+                    editOrigin = null;
+                    initTrackerUI();
+                    showScreen('tracker');
+                } else {
+                    editOrigin = null;
+                    currentCharacterId = null;
+                    currentCharacterData = null;
+                    loadCharacterMenu();
+                    showScreen('menu');
+                }
             } catch (error) {
-                console.error("Error creating character:", error);
+                console.error("Error creating/editing character:", error);
             }
         }
 
@@ -425,11 +812,13 @@
             document.documentElement.style.setProperty('--char-c1', c1);
             document.documentElement.style.setProperty('--char-c2', c2);
 
-            // Apply gradient background
-            document.body.style.background = `linear-gradient(135deg, #111827 0%, ${c2}40 100%)`;
+            // Apply animated gradient background incorporating character colors
+            document.body.style.background = `linear-gradient(-45deg, #090d16, ${c2}a0, #111827, ${c1}60)`;
+            document.body.style.backgroundSize = '400% 400%';
+            document.body.style.animation = 'auraShift 15s ease infinite';
             
             // Header styling
-            document.getElementById('tracker-header').style.background = `linear-gradient(to right, ${c1}, ${c2})`;
+            document.getElementById('tracker-header').style.background = `linear-gradient(135deg, ${c1}, ${c2})`;
         }
 
         function initTrackerUI() {
@@ -451,6 +840,30 @@
                     showScreen('menu');
                 }
             });
+        }
+
+        function updateVitalGlows(hpPct, manaPct, staminaPct) {
+            const hpFill = document.getElementById('hp-fill');
+            const manaFill = document.getElementById('mana-fill');
+            const staminaFill = document.getElementById('stamina-fill');
+            if (hpFill) {
+                const ratio = Math.max(0, Math.min(1, hpPct / 100));
+                const hpSpread = Math.round(4 + ratio * 20);
+                const hpAlpha = (0.25 + ratio * 0.7).toFixed(2);
+                hpFill.style.boxShadow = `0 0 ${hpSpread}px rgba(239, 68, 68, ${hpAlpha}), inset 0 0 10px rgba(255, 255, 255, ${0.1 + ratio * 0.4})`;
+            }
+            if (manaFill) {
+                const ratio = Math.max(0, Math.min(1, manaPct / 100));
+                const manaSpread = Math.round(4 + ratio * 22);
+                const manaAlpha = (0.25 + ratio * 0.75).toFixed(2);
+                manaFill.style.boxShadow = `0 0 ${manaSpread}px rgba(59, 130, 246, ${manaAlpha}), inset 0 0 10px rgba(255, 255, 255, ${0.1 + ratio * 0.4})`;
+            }
+            if (staminaFill) {
+                const ratio = Math.max(0, Math.min(1, (staminaPct !== undefined ? staminaPct : 100) / 100));
+                const stamSpread = Math.round(4 + ratio * 22);
+                const stamAlpha = (0.25 + ratio * 0.75).toFixed(2);
+                staminaFill.style.boxShadow = `0 0 ${stamSpread}px rgba(245, 158, 11, ${stamAlpha}), inset 0 0 10px rgba(255, 255, 255, ${0.1 + ratio * 0.4})`;
+            }
         }
 
         function renderTracker() {
@@ -481,11 +894,20 @@
             document.getElementById('hp-text').innerText = `${data.hp} / ${data.maxHp}`;
             document.getElementById('mana-text').innerText = `${data.mana} / ${data.maxMana}`;
             
+            const maxStam = data.maxStamina || 10;
+            const currentStam = data.stamina !== undefined ? data.stamina : maxStam;
+            document.getElementById('stamina-text').innerText = `${currentStam} / ${maxStam}`;
+
             const hpPct = Math.max(0, Math.min(100, (data.hp / data.maxHp) * 100));
             document.getElementById('hp-fill').style.width = `${hpPct}%`;
             
             const manaPct = Math.max(0, Math.min(100, (data.mana / data.maxMana) * 100));
             document.getElementById('mana-fill').style.width = `${manaPct}%`;
+
+            const staminaPct = Math.max(0, Math.min(100, (currentStam / maxStam) * 100));
+            document.getElementById('stamina-fill').style.width = `${staminaPct}%`;
+
+            updateVitalGlows(hpPct, manaPct, staminaPct);
 
             // Currency
             if(data.currency) {
@@ -500,12 +922,401 @@
                 notesEl.value = data.notes || "";
             }
 
+            renderInventory();
             renderAttacks();
         }
 
+        // --- Inventory & Vault Logic ---
+        function renderInventory() {
+            if (!currentCharacterData) return;
+            
+            // Ensure inventory structure exists
+            if (!currentCharacterData.inventory) {
+                currentCharacterData.inventory = { categories: JSON.parse(JSON.stringify(DEFAULT_INVENTORY_CATEGORIES)), items: [] };
+            }
+            const inv = currentCharacterData.inventory;
+            if (!inv.categories || inv.categories.length === 0) {
+                inv.categories = JSON.parse(JSON.stringify(DEFAULT_INVENTORY_CATEGORIES));
+            }
+            const categories = inv.categories;
+            const items = inv.items || [];
+
+            // Calculate total weight
+            const totalWeight = items.reduce((acc, item) => acc + (parseFloat(item.weight) || 0), 0);
+            const weightEl = document.getElementById('inventory-total-weight');
+            if (weightEl) weightEl.innerText = `${totalWeight.toFixed(1)} lbs`;
+
+            // Render Category Filter Tabs
+            const catContainer = document.getElementById('inventory-categories-list');
+            if (catContainer) {
+                catContainer.innerHTML = '';
+                
+                // "All" Tab
+                const isAll = selectedInventoryCategory === 'all';
+                const allBtn = document.createElement('button');
+                allBtn.type = 'button';
+                allBtn.className = `px-3.5 py-1.5 rounded-xl font-serif text-xs font-bold border transition flex items-center gap-1.5 shrink-0 ${
+                    isAll ? 'bg-amber-400 text-slate-950 border-amber-300 shadow-md' : 'bg-slate-900/80 text-amber-200/80 border-amber-900/40 hover:border-amber-500/50'
+                }`;
+                allBtn.onclick = () => { selectedInventoryCategory = 'all'; renderInventory(); };
+                allBtn.innerHTML = `<span class="material-icons text-sm">view_module</span> All (${items.length})`;
+                catContainer.appendChild(allBtn);
+
+                categories.forEach(cat => {
+                    const isSelected = selectedInventoryCategory === cat.id;
+                    const count = items.filter(i => i.categoryId === cat.id).length;
+                    const btn = document.createElement('button');
+                    btn.type = 'button';
+                    btn.className = `px-3.5 py-1.5 rounded-xl font-serif text-xs font-bold border transition flex items-center gap-1.5 shrink-0 ${
+                        isSelected ? 'bg-amber-400 text-slate-950 border-amber-300 shadow-md' : 'bg-slate-900/80 text-amber-200/80 border-amber-900/40 hover:border-amber-500/50'
+                    }`;
+                    btn.onclick = () => { selectedInventoryCategory = cat.id; renderInventory(); };
+                    btn.innerHTML = `
+                        <span class="material-icons text-sm" style="color: ${isSelected ? '#000' : (cat.color || '#fbbf24')}">${cat.icon || 'inventory_2'}</span>
+                        <span>${cat.name} (${count})</span>
+                    `;
+                    catContainer.appendChild(btn);
+                });
+
+                // "+ Category" button
+                const addCatBtn = document.createElement('button');
+                addCatBtn.type = 'button';
+                addCatBtn.className = 'px-3 py-1.5 bg-amber-950/60 hover:bg-amber-900/80 text-amber-300 border border-amber-600/40 rounded-xl font-serif text-xs font-bold transition flex items-center gap-1 shrink-0';
+                addCatBtn.onclick = openCreateCategoryModal;
+                addCatBtn.innerHTML = '<span class="material-icons text-xs">add</span> List';
+                catContainer.appendChild(addCatBtn);
+            }
+
+            // Search input query
+            const searchEl = document.getElementById('inventory-search-input');
+            const searchQuery = searchEl ? searchEl.value.trim().toLowerCase() : '';
+
+            // Render Items List
+            const itemsContainer = document.getElementById('inventory-items-list');
+            if (!itemsContainer) return;
+            itemsContainer.innerHTML = '';
+
+            let filteredItems = items.filter(item => {
+                const matchesCategory = selectedInventoryCategory === 'all' || item.categoryId === selectedInventoryCategory;
+                const matchesSearch = !searchQuery || 
+                    (item.name || '').toLowerCase().includes(searchQuery) || 
+                    (item.description || '').toLowerCase().includes(searchQuery);
+                return matchesCategory && matchesSearch;
+            });
+
+            // Sort alphabetically by item name
+            filteredItems.sort((a, b) => (a.name || '').localeCompare(b.name || '', undefined, { sensitivity: 'base' }));
+
+            if (filteredItems.length === 0) {
+                itemsContainer.innerHTML = `
+                    <div class="text-center text-amber-200/50 py-8 font-serif text-sm border border-dashed border-amber-900/30 rounded-2xl">
+                        ${searchQuery ? 'No inventory items match your search.' : 'No items stored in this list yet.'}
+                    </div>
+                `;
+                return;
+            }
+
+            filteredItems.forEach((item) => {
+                const cat = categories.find(c => c.id === item.categoryId) || { name: 'Item', icon: 'inventory_2', color: '#8b5cf6' };
+                const rarityInfo = RARITY_META[item.rarity || 'common'] || RARITY_META.common;
+
+                const card = document.createElement('div');
+                card.className = `p-4 rounded-2xl border ${rarityInfo.border} ${rarityInfo.bg} shadow-lg space-y-2 transition relative`;
+                
+                let statBadges = [];
+                if (item.acBonus && parseInt(item.acBonus) !== 0) {
+                    statBadges.push(`<span class="bg-blue-950/80 text-blue-300 border border-blue-600/40 px-2 py-0.5 rounded-lg text-[10px] font-mono font-bold">🛡️ +${item.acBonus} AC</span>`);
+                }
+                if (item.damageRoll && item.damageRoll.trim()) {
+                    statBadges.push(`<span class="bg-rose-950/80 text-rose-300 border border-rose-600/40 px-2 py-0.5 rounded-lg text-[10px] font-mono font-bold">⚔️ ${item.damageRoll}</span>`);
+                }
+                if (item.healRoll && item.healRoll.trim()) {
+                    statBadges.push(`<span class="bg-emerald-950/80 text-emerald-300 border border-emerald-600/40 px-2 py-0.5 rounded-lg text-[10px] font-mono font-bold">🧪 ${item.healRoll}</span>`);
+                }
+                if (item.attachedSpellName && item.attachedSpellName.trim()) {
+                    statBadges.push(`<span class="bg-amber-950/80 text-amber-300 border border-amber-600/40 px-2 py-0.5 rounded-lg text-[10px] font-serif font-bold">📜 ${item.attachedSpellName}</span>`);
+                }
+
+                card.innerHTML = `
+                    <div class="flex items-start justify-between gap-3">
+                        <div class="flex items-center gap-3">
+                            <div class="w-10 h-10 rounded-xl flex items-center justify-center text-white shrink-0 border border-amber-500/30 shadow-md" style="background-color: ${cat.color || '#8b5cf6'}">
+                                <span class="material-icons text-xl">${cat.icon || 'inventory_2'}</span>
+                            </div>
+                            <div>
+                                <h4 class="font-serif font-bold text-white text-base leading-tight">${item.name}</h4>
+                                <div class="flex items-center gap-2 mt-0.5">
+                                    <span class="text-[10px] font-serif font-bold uppercase tracking-wider ${rarityInfo.text}">${rarityInfo.name}</span>
+                                    <span class="text-[10px] text-amber-200/60 font-mono">• ${item.weight || 0} lbs</span>
+                                </div>
+                            </div>
+                        </div>
+                        <button onclick="promptDeleteItem('${item.id}')" class="text-gray-500 hover:text-rose-400 p-1 transition shrink-0">
+                            <span class="material-icons text-lg">close</span>
+                        </button>
+                    </div>
+                    ${item.description ? `<p class="text-xs text-amber-100/80 font-serif leading-relaxed pt-1 border-t border-amber-900/30">${item.description}</p>` : ''}
+                    ${statBadges.length > 0 ? `<div class="flex flex-wrap gap-1.5 pt-1">${statBadges.join('')}</div>` : ''}
+                `;
+                itemsContainer.appendChild(card);
+            });
+        }
+
+        window.promptDeleteItem = function(itemId) {
+            const inv = (currentCharacterData && currentCharacterData.inventory) || { items: [] };
+            const item = (inv.items || []).find(i => i.id === itemId);
+            if (!item) return;
+            
+            showConfirm(
+                "Discard Item?",
+                `Are you sure you want to remove '${item.name}' from your vault?`,
+                "Discard",
+                async () => {
+                    const updatedItems = (inv.items || []).filter(i => i.id !== itemId);
+                    inv.items = updatedItems;
+                    await updateDocData({ inventory: inv });
+                }
+            );
+        }
+
+        // --- Category Modal Logic ---
+        function openCreateCategoryModal() {
+            renderCategoryIconSelect();
+            const modal = document.getElementById('modal-create-category');
+            if (modal) modal.classList.remove('hidden');
+        }
+        window.openCreateCategoryModal = openCreateCategoryModal;
+
+        function closeCreateCategoryModal() {
+            const modal = document.getElementById('modal-create-category');
+            if (modal) modal.classList.add('hidden');
+        }
+        window.closeCreateCategoryModal = closeCreateCategoryModal;
+
+        function renderCategoryIconSelect() {
+            const grid = document.getElementById('cat-icon-grid');
+            if(!grid) return;
+            grid.innerHTML = '';
+            const hiddenInput = document.getElementById('cat-icon-input');
+            const selectedIcon = hiddenInput.value || 'inventory_2';
+
+            categoryIconOptions.forEach(icon => {
+                const isSelected = selectedIcon === icon;
+                const div = document.createElement('div');
+                div.className = `p-2 rounded-xl border flex items-center justify-center cursor-pointer transition ${
+                    isSelected ? 'border-amber-400 bg-amber-950/80 text-amber-300' : 'border-gray-800 bg-slate-950/60 text-gray-400 hover:text-white'
+                }`;
+                div.innerHTML = `<span class="material-icons text-xl">${icon}</span>`;
+                div.onclick = () => {
+                    hiddenInput.value = icon;
+                    renderCategoryIconSelect();
+                };
+                grid.appendChild(div);
+            });
+        }
+        window.renderCategoryIconSelect = renderCategoryIconSelect;
+
+        async function submitCreateCategory(e) {
+            e.preventDefault();
+            const name = document.getElementById('cat-name-input').value.trim();
+            const icon = document.getElementById('cat-icon-input').value;
+            const color = document.getElementById('cat-color-input').value;
+
+            if(!name || !currentCharacterData) return;
+
+            const inv = currentCharacterData.inventory || { categories: [...DEFAULT_INVENTORY_CATEGORIES], items: [] };
+            const newCat = {
+                id: 'cat_' + Date.now(),
+                name: name,
+                icon: icon || 'inventory_2',
+                color: color || '#8b5cf6'
+            };
+
+            inv.categories.push(newCat);
+            try {
+                await updateDocData({ inventory: inv });
+                closeCreateCategoryModal();
+                document.getElementById('cat-name-input').value = '';
+            } catch (err) {
+                console.error("Error creating category:", err);
+            }
+        }
+        window.submitCreateCategory = submitCreateCategory;
+
+        // --- Add Item Modal Logic ---
+        function populateItemCategorySelect() {
+            const catSelect = document.getElementById('item-category-select');
+            if (catSelect) {
+                let categories = DEFAULT_INVENTORY_CATEGORIES;
+                if (currentCharacterData && currentCharacterData.inventory && currentCharacterData.inventory.categories && currentCharacterData.inventory.categories.length > 0) {
+                    categories = currentCharacterData.inventory.categories;
+                }
+                catSelect.innerHTML = categories.map(c => `<option value="${c.id}">${c.name}</option>`).join('');
+                if (selectedInventoryCategory !== 'all' && categories.some(c => c.id === selectedInventoryCategory)) {
+                    catSelect.value = selectedInventoryCategory;
+                }
+            }
+        }
+        window.populateItemCategorySelect = populateItemCategorySelect;
+
+        function populateItemSpellSelect() {
+            const select = document.getElementById('item-spell-select');
+            if (!select) return;
+            select.innerHTML = '<option value="">-- None --</option><option value="custom">-- Custom Ability / Effect --</option>';
+            (availableSpells || []).forEach(spell => {
+                select.innerHTML += `<option value="${spell.name}">${spell.name} (Lvl ${spell.level})</option>`;
+            });
+        }
+        window.populateItemSpellSelect = populateItemSpellSelect;
+
+        function toggleCustomSpellInput(e) {
+            const customInput = document.getElementById('item-spell-custom-input');
+            if (!customInput) return;
+            if (e.target.value === 'custom') {
+                customInput.classList.remove('hidden');
+                customInput.focus();
+            } else {
+                customInput.classList.add('hidden');
+            }
+        }
+        window.toggleCustomSpellInput = toggleCustomSpellInput;
+
+        function openCreateItemModal() {
+            populateItemSelector();
+            populateItemCategorySelect();
+            populateItemSpellSelect();
+            const modal = document.getElementById('modal-create-item');
+            if (modal) modal.classList.remove('hidden');
+        }
+        window.openCreateItemModal = openCreateItemModal;
+
+        function closeCreateItemModal() {
+            const modal = document.getElementById('modal-create-item');
+            if (modal) modal.classList.add('hidden');
+        }
+        window.closeCreateItemModal = closeCreateItemModal;
+
+        function handleItemCatalogSelect(e) {
+            const val = e.target.value;
+            if (val === 'new') return;
+
+            const item = availableSharedItems.find(i => i.id === val);
+            if (item) {
+                document.getElementById('item-name-input').value = item.name || '';
+                document.getElementById('item-rarity-select').value = item.rarity || 'common';
+                document.getElementById('item-weight-input').value = item.weight || 1.0;
+                document.getElementById('item-description-input').value = item.description || '';
+                document.getElementById('item-ac-input').value = item.acBonus || 0;
+                document.getElementById('item-damage-input').value = item.damageRoll || '';
+                document.getElementById('item-heal-input').value = item.healRoll || '';
+                
+                const catSelect = document.getElementById('item-category-select');
+                if (catSelect && item.categoryId) {
+                    const matchOpt = Array.from(catSelect.options).find(opt => opt.value === item.categoryId);
+                    if (matchOpt) {
+                        catSelect.value = item.categoryId;
+                    }
+                }
+
+                const spellSelect = document.getElementById('item-spell-select');
+                const customInput = document.getElementById('item-spell-custom-input');
+                const spellName = item.attachedSpellName || '';
+
+                if (spellSelect) {
+                    const matchOption = Array.from(spellSelect.options).find(opt => opt.value === spellName);
+                    if (matchOption) {
+                        spellSelect.value = spellName;
+                        if (customInput) customInput.classList.add('hidden');
+                    } else if (spellName) {
+                        spellSelect.value = 'custom';
+                        if (customInput) {
+                            customInput.value = spellName;
+                            customInput.classList.remove('hidden');
+                        }
+                    } else {
+                        spellSelect.value = '';
+                        if (customInput) customInput.classList.add('hidden');
+                    }
+                }
+            }
+        }
+        window.handleItemCatalogSelect = handleItemCatalogSelect;
+
+        async function submitCreateItem(e) {
+            e.preventDefault();
+            const selectorVal = document.getElementById('item-selector').value;
+
+            const name = document.getElementById('item-name-input').value.trim();
+            const categoryId = document.getElementById('item-category-select').value;
+            const rarity = document.getElementById('item-rarity-select').value;
+            const weight = parseFloat(document.getElementById('item-weight-input').value) || 0;
+            const description = document.getElementById('item-description-input').value.trim();
+            const acBonus = parseInt(document.getElementById('item-ac-input').value) || 0;
+            const damageRoll = document.getElementById('item-damage-input').value.trim();
+            const healRoll = document.getElementById('item-heal-input').value.trim();
+
+            const spellSelectVal = document.getElementById('item-spell-select').value;
+            let attachedSpellName = '';
+            if (spellSelectVal === 'custom') {
+                attachedSpellName = document.getElementById('item-spell-custom-input').value.trim();
+            } else if (spellSelectVal) {
+                attachedSpellName = spellSelectVal;
+            }
+
+            if (!name || !categoryId) return;
+
+            const itemData = {
+                id: 'item_' + Date.now() + '_' + Math.floor(Math.random() * 1000),
+                categoryId: categoryId,
+                name: name,
+                rarity: rarity,
+                weight: weight,
+                description: description,
+                acBonus: acBonus,
+                damageRoll: damageRoll,
+                healRoll: healRoll,
+                attachedSpellName: attachedSpellName
+            };
+
+            // If creating custom item OR in DM compendium, save to shared catalog
+            if (selectorVal === 'new' || !currentCharacterData) {
+                try {
+                    const newItemRef = doc(collection(db, "campaigns", currentCampaignId, "items"));
+                    await setDoc(newItemRef, itemData);
+                    itemData.catalogId = newItemRef.id;
+                    const existingIdx = availableSharedItems.findIndex(i => i.id === itemData.id);
+                    if (existingIdx > -1) {
+                        availableSharedItems[existingIdx] = itemData;
+                    } else {
+                        availableSharedItems.push(itemData);
+                    }
+                } catch (err) {
+                    console.error("Failed to save item to catalog:", err);
+                }
+            }
+
+            // If a character sheet is active, add to character vault
+            if (currentCharacterData) {
+                const inv = currentCharacterData.inventory || { categories: [...DEFAULT_INVENTORY_CATEGORIES], items: [] };
+                inv.items = inv.items || [];
+                inv.items.push(itemData);
+
+                try {
+                    await updateDocData({ inventory: inv });
+                } catch (err) {
+                    console.error("Error adding item to inventory:", err);
+                }
+            } else {
+                renderDMCompendium();
+            }
+
+            closeCreateItemModal();
+        }
+        window.submitCreateItem = submitCreateItem;
+
         // --- Turn Queue Logic ---
         function resetTurnQueue() {
-            turnQueue = { hpChange: 0, manaChange: 0, spellsToCast: [] };
+            turnQueue = { hpChange: 0, manaChange: 0, staminaChange: 0, spellsToCast: [] };
             renderTurnPreview();
             renderAttacks(); 
         }
@@ -513,6 +1324,7 @@
         window.queueVital = function(type, amount) {
             if(type === 'hp') turnQueue.hpChange += amount;
             if(type === 'mana') turnQueue.manaChange += amount;
+            if(type === 'stamina') turnQueue.staminaChange += amount;
             renderTurnPreview();
         }
 
@@ -520,13 +1332,18 @@
             const spell = currentCharacterData.attacks[index];
             const qIndex = turnQueue.spellsToCast.findIndex(s => s.index === index);
 
+            const manaCost = spell.manaCost || 0;
+            const staminaCost = spell.staminaCost || 0;
+
             if (qIndex > -1) {
                 // Remove
-                turnQueue.manaChange += spell.manaCost; // Refund cost
+                turnQueue.manaChange += manaCost; // Refund cost
+                turnQueue.staminaChange += staminaCost; // Refund cost
                 turnQueue.spellsToCast.splice(qIndex, 1);
             } else {
                 // Add
-                turnQueue.manaChange -= spell.manaCost; // Deduct cost
+                turnQueue.manaChange -= manaCost; // Deduct cost
+                turnQueue.staminaChange -= staminaCost; // Deduct cost
                 turnQueue.spellsToCast.push({ index, spell });
             }
             renderTurnPreview();
@@ -539,8 +1356,10 @@
 
             // Calculate projections
             let projectedHp = data.hp + turnQueue.hpChange;
-            // Healing spells don't predict exact amounts yet, so we don't calculate them here
             let projectedMana = data.mana + turnQueue.manaChange;
+            let maxStam = data.maxStamina || 10;
+            let currentStam = data.stamina !== undefined ? data.stamina : maxStam;
+            let projectedStamina = currentStam + turnQueue.staminaChange;
 
             // Visual Fill logic (Ghosts)
             const hpFill = document.getElementById('hp-fill');
@@ -587,10 +1406,36 @@
                 manaGhost.style.width = `0%`;
             }
 
+            const staminaFill = document.getElementById('stamina-fill');
+            const staminaGhost = document.getElementById('stamina-ghost');
+            
+            const currentStaminaPct = Math.max(0, Math.min(100, (currentStam / maxStam) * 100));
+            const projStaminaPct = Math.max(0, Math.min(100, (projectedStamina / maxStam) * 100));
+
+            if (staminaFill && staminaGhost) {
+                if (projectedStamina < currentStam) {
+                    staminaFill.style.width = `${projStaminaPct}%`;
+                    staminaGhost.style.left = `${projStaminaPct}%`;
+                    staminaGhost.style.width = `${currentStaminaPct - projStaminaPct}%`;
+                    staminaGhost.classList.replace('bg-amber-400', 'bg-red-500');
+                } else if (projectedStamina > currentStam) {
+                    staminaFill.style.width = `${currentStaminaPct}%`;
+                    staminaGhost.style.left = `${currentStaminaPct}%`;
+                    staminaGhost.style.width = `${projStaminaPct - currentStaminaPct}%`;
+                    staminaGhost.classList.replace('bg-red-500', 'bg-amber-400');
+                } else {
+                    staminaFill.style.width = `${currentStaminaPct}%`;
+                    staminaGhost.style.width = `0%`;
+                }
+            }
+
+            updateVitalGlows(projHpPct, projManaPct, projStaminaPct);
+
             // Summary text
             let summaryParts = [];
             if (turnQueue.hpChange !== 0) summaryParts.push(`${turnQueue.hpChange > 0 ? '+' : ''}${turnQueue.hpChange} HP`);
             if (turnQueue.manaChange !== 0) summaryParts.push(`${turnQueue.manaChange > 0 ? '+' : ''}${turnQueue.manaChange} Mana`);
+            if (turnQueue.staminaChange !== 0) summaryParts.push(`${turnQueue.staminaChange > 0 ? '+' : ''}${turnQueue.staminaChange} Stamina`);
             if (turnQueue.spellsToCast.length > 0) summaryParts.push(`${turnQueue.spellsToCast.length} Action(s)`);
 
             if (summaryParts.length > 0) {
@@ -616,6 +1461,31 @@
             }
         }
 
+        function formatSpellDice(s) {
+            let parts = [];
+            if (s.diceParts && s.diceParts.length > 0) {
+                parts.push(s.diceParts.map(p => `${p.amount}d${p.type}${p.damageType ? ' ' + p.damageType : ''}`).join(' + '));
+            } else if (s.diceAmount && s.diceType) {
+                parts.push(`${s.diceAmount}d${s.diceType} ${s.damageType || ''}`.trim());
+            }
+            
+            // Health effect tag
+            if (s.hpEffectType === 'heal' || (s.isHeal && s.hpEffectType !== 'damage')) {
+                let hpStr = '(Restores HP)';
+                if (s.hpDiceParts && s.hpDiceParts.length > 0) {
+                    hpStr = `(+HP ${s.hpDiceParts.map(p => `${p.amount}d${p.type}`).join('+')})`;
+                }
+                parts.push(`<span class="text-emerald-400 font-bold">${hpStr}</span>`);
+            } else if (s.hpEffectType === 'damage') {
+                let hpStr = '(-HP Recoil)';
+                if (s.hpDiceParts && s.hpDiceParts.length > 0) {
+                    hpStr = `(-HP ${s.hpDiceParts.map(p => `${p.amount}d${p.type}`).join('+')})`;
+                }
+                parts.push(`<span class="text-rose-400 font-bold">${hpStr}</span>`);
+            }
+            return parts.join(' | ') || 'Utility Ability';
+        }
+
         function renderExecuteScreen() {
             const container = document.getElementById('execute-spells-container');
             container.innerHTML = '';
@@ -623,20 +1493,48 @@
             turnQueue.spellsToCast.forEach((item, i) => {
                 const s = item.spell;
                 const div = document.createElement('div');
-                div.className = 'bg-gray-800 p-4 rounded-xl border border-gray-700 mb-4';
+                div.className = 'bg-slate-900/90 p-5 rounded-2xl border border-amber-600/40 mb-4 shadow-xl';
+                
+                let inputsHtml = '';
+                const parts = s.diceParts && s.diceParts.length > 0 ? s.diceParts : [{ amount: s.diceAmount || 1, type: s.diceType || 6, damageType: s.damageType || '' }];
+                
+                parts.forEach((p, pIdx) => {
+                    const label = `${p.amount}d${p.type} ${p.damageType ? p.damageType + ' Roll' : 'Roll'}`;
+                    inputsHtml += `
+                        <div class="mb-3">
+                            <label class="block text-xs font-serif text-amber-300 font-bold mb-1">${label}</label>
+                            <input type="number" id="roll-result-${i}-${pIdx}" placeholder="Total roll..." class="w-full bg-gray-900 border border-amber-900/60 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-amber-400 text-center text-xl font-mono font-bold">
+                        </div>
+                    `;
+                });
+
+                const isHeal = s.hpEffectType === 'heal' || (s.isHeal && s.hpEffectType !== 'damage');
+                const isDmg = s.hpEffectType === 'damage';
+                if (isHeal || isDmg) {
+                    const hpParts = s.hpDiceParts && s.hpDiceParts.length > 0 ? s.hpDiceParts : [];
+                    const hpDiceStr = hpParts.length > 0 ? ` (${hpParts.map(p => `${p.amount}d${p.type}`).join('+')})` : '';
+                    const hpLabel = isHeal ? `Health Restored Roll${hpDiceStr}` : `Self Damage / Recoil Roll${hpDiceStr}`;
+                    const borderCol = isHeal ? 'border-emerald-500/50 focus:border-emerald-400' : 'border-rose-500/50 focus:border-rose-400';
+                    const labelCol = isHeal ? 'text-emerald-400' : 'text-rose-400';
+                    inputsHtml += `
+                        <div class="mt-4 pt-3 border-t border-gray-700/80">
+                            <label class="block text-xs font-serif ${labelCol} font-bold mb-1">${hpLabel}</label>
+                            <input type="number" id="roll-hp-result-${i}" placeholder="Enter HP roll..." class="w-full bg-gray-900 border ${borderCol} rounded-xl px-4 py-3 text-white focus:outline-none text-center text-xl font-mono font-bold">
+                        </div>
+                    `;
+                }
+
                 div.innerHTML = `
-                    <div class="flex items-center gap-3 mb-3">
-                        <div class="w-10 h-10 rounded-full flex items-center justify-center text-white shadow-lg" style="background-color: ${s.color || '#3b82f6'}">
-                            <span class="material-icons">${s.icon || 'bolt'}</span>
+                    <div class="flex items-center gap-3 mb-4">
+                        <div class="w-12 h-12 rounded-2xl flex items-center justify-center text-white shadow-lg shrink-0 border border-amber-500/40" style="background-color: ${s.color || '#3b82f6'}">
+                            <span class="material-icons text-2xl">${s.icon || 'bolt'}</span>
                         </div>
                         <div>
-                            <h4 class="text-white font-bold">${s.name}</h4>
-                            <p class="text-xs text-gray-400">${s.diceAmount}d${s.diceType} ${s.damageType} ${s.isHeal ? '(Heal)' : ''}</p>
+                            <h4 class="text-white font-serif font-bold text-lg">${s.name}</h4>
+                            <p class="text-xs text-amber-200/80 font-medium">${formatSpellDice(s)}</p>
                         </div>
                     </div>
-                    <div class="flex items-center gap-2">
-                        <input type="number" id="roll-result-${i}" placeholder="Enter total roll..." class="w-full bg-gray-900 border border-gray-600 rounded-lg px-4 py-3 text-white focus:outline-none focus:border-[var(--char-c1)] text-center text-xl font-bold">
-                    </div>
+                    ${inputsHtml}
                 `;
                 container.appendChild(div);
             });
@@ -647,12 +1545,22 @@
         }
 
         window.commitExecute = function() {
-            // Apply spell effects if they target self (heals)
             turnQueue.spellsToCast.forEach((item, i) => {
                 const s = item.spell;
-                if (s.isHeal) {
-                    const roll = parseInt(document.getElementById(`roll-result-${i}`).value) || 0;
-                    turnQueue.hpChange += roll;
+                const isHeal = s.hpEffectType === 'heal' || (s.isHeal && s.hpEffectType !== 'damage');
+                const isDmg = s.hpEffectType === 'damage';
+                
+                if (isHeal || isDmg) {
+                    const hpInput = document.getElementById(`roll-hp-result-${i}`);
+                    let rollVal = hpInput ? (parseInt(hpInput.value) || 0) : 0;
+                    
+                    if (!hpInput) {
+                        const mainInput = document.getElementById(`roll-result-${i}-0`);
+                        if (mainInput) rollVal = parseInt(mainInput.value) || 0;
+                    }
+
+                    if (isHeal) turnQueue.hpChange += Math.abs(rollVal);
+                    if (isDmg) turnQueue.hpChange -= Math.abs(rollVal);
                 }
             });
 
@@ -663,12 +1571,16 @@
         async function commitTurn() {
             const data = currentCharacterData;
             
+            let maxStam = data.maxStamina || 10;
+            let currentStam = data.stamina !== undefined ? data.stamina : maxStam;
+
             // Calculate final values, bound by min/max
             let newHp = Math.max(0, Math.min(data.maxHp, data.hp + turnQueue.hpChange));
             let newMana = Math.max(0, Math.min(data.maxMana, data.mana + turnQueue.manaChange));
+            let newStamina = Math.max(0, Math.min(maxStam, currentStam + turnQueue.staminaChange));
 
             try {
-                await updateDocData({ hp: newHp, mana: newMana });
+                await updateDocData({ hp: newHp, mana: newMana, stamina: newStamina });
                 resetTurnQueue();
             } catch (error) {
                 console.error("Error committing turn:", error);
@@ -683,52 +1595,95 @@
             const attacks = currentCharacterData.attacks || [];
             
             if (attacks.length === 0) {
-                list.innerHTML = '<div class="text-center text-gray-500 py-4 text-sm">No abilities scribed.</div>';
+                list.innerHTML = '<div class="text-center text-amber-200/60 py-6 text-sm font-serif">No abilities scribed yet.</div>';
                 return;
             }
 
-            // Calculate projected mana for checking affordance
+            const maxStam = currentCharacterData.maxStamina || 10;
+            const currentStam = currentCharacterData.stamina !== undefined ? currentCharacterData.stamina : maxStam;
+
             const projectedMana = currentCharacterData.mana + turnQueue.manaChange;
+            const projectedStamina = currentStam + turnQueue.staminaChange;
 
             attacks.forEach((atk, index) => {
+                const manaCost = atk.manaCost || 0;
+                const staminaCost = atk.staminaCost || 0;
+
                 const isQueued = turnQueue.spellsToCast.some(s => s.index === index);
-                
-                // Can we afford to queue this? (Check if not already queued)
-                const canAfford = isQueued || (projectedMana >= atk.manaCost);
+                const canAfford = isQueued || (projectedMana >= manaCost && projectedStamina >= staminaCost);
                 
                 const cardClass = canAfford 
-                    ? (isQueued ? 'bg-[var(--char-c1)]/20 border-[var(--char-c1)]' : 'bg-gray-800 border-gray-700 hover:border-gray-500')
-                    : 'bg-gray-800/50 border-gray-800 opacity-50 grayscale';
+                    ? (isQueued ? 'bg-[var(--char-c1)]/20 border-[var(--char-c1)] shadow-[0_0_15px_rgba(212,175,55,0.2)]' : 'bg-slate-900/90 border-amber-900/40 hover:border-amber-600/60')
+                    : 'bg-slate-900/50 border-gray-800 opacity-50 grayscale';
+
+                let costBadgeHtml = '';
+                if (manaCost > 0 && staminaCost > 0) {
+                    costBadgeHtml = `
+                        <div class="flex gap-1.5 shrink-0">
+                            <div class="bg-amber-950/60 px-2 py-0.5 rounded-lg border border-amber-600/40 text-center">
+                                <span class="block text-[8px] text-amber-300 font-serif uppercase tracking-wider -mb-0.5">Mana</span>
+                                <span class="text-sm font-black text-amber-400 font-mono">${manaCost}</span>
+                            </div>
+                            <div class="bg-amber-950/60 px-2 py-0.5 rounded-lg border border-emerald-600/40 text-center">
+                                <span class="block text-[8px] text-emerald-300 font-serif uppercase tracking-wider -mb-0.5">Stam</span>
+                                <span class="text-sm font-black text-amber-400 font-mono">${staminaCost}</span>
+                            </div>
+                        </div>
+                    `;
+                } else if (staminaCost > 0) {
+                    costBadgeHtml = `
+                        <div class="bg-amber-950/60 px-2.5 py-1 rounded-xl border border-emerald-600/40 text-center shrink-0">
+                            <span class="block text-[8px] text-emerald-300 font-serif uppercase tracking-wider -mb-1">Stamina</span>
+                            <span class="text-base font-black text-amber-400 font-mono">${staminaCost}</span>
+                        </div>
+                    `;
+                } else {
+                    costBadgeHtml = `
+                        <div class="bg-amber-950/60 px-2.5 py-1 rounded-xl border border-amber-600/40 text-center shrink-0">
+                            <span class="block text-[8px] text-amber-300 font-serif uppercase tracking-wider -mb-1">Mana</span>
+                            <span class="text-base font-black text-amber-400 font-mono">${manaCost}</span>
+                        </div>
+                    `;
+                }
 
                 const div = document.createElement('div');
-                div.className = `p-4 rounded-2xl border-2 flex items-center justify-between transition-all duration-300 ${cardClass}`;
+                div.className = `p-4 rounded-2xl border flex items-center justify-between transition-all duration-300 shadow-md ${cardClass}`;
                 
                 div.innerHTML = `
                     <div class="flex items-center gap-4 flex-grow cursor-pointer" onclick="${canAfford ? `toggleSpellQueue(${index})` : ''}">
-                        <div class="w-12 h-12 rounded-full flex items-center justify-center text-white shadow-lg shrink-0 relative" style="background-color: ${atk.color || '#3b82f6'}">
+                        <div class="w-12 h-12 rounded-2xl flex items-center justify-center text-white shadow-lg shrink-0 relative border border-amber-500/30" style="background-color: ${atk.color || '#3b82f6'}">
                             <span class="material-icons">${atk.icon || 'bolt'}</span>
-                            ${isQueued ? '<span class="absolute -top-1 -right-1 bg-green-500 rounded-full w-4 h-4 border-2 border-gray-900"></span>' : ''}
+                            ${isQueued ? '<span class="absolute -top-1 -right-1 bg-amber-400 rounded-full w-4 h-4 border-2 border-gray-900"></span>' : ''}
                         </div>
                         <div>
-                            <h3 class="font-bold text-white leading-tight ${isQueued ? 'text-[var(--char-c1)]' : ''}">${atk.name}</h3>
-                            <p class="text-xs text-gray-400 font-medium tracking-wide">
-                                Lvl ${atk.level} | ${atk.diceAmount}d${atk.diceType} ${atk.damageType} ${atk.isHeal ? '<span class="text-green-400">(Heal)</span>' : ''}
+                            <h3 class="font-serif font-bold text-white leading-tight text-base ${isQueued ? 'text-[var(--char-c1)]' : ''}">${atk.name}</h3>
+                            <p class="text-xs text-amber-200/70 font-medium tracking-wide mt-0.5">
+                                Lvl ${atk.level} | ${formatSpellDice(atk)}
                             </p>
                         </div>
                     </div>
                     
                     <div class="flex items-center gap-3 shrink-0 ml-2">
-                        <div class="bg-blue-900/40 px-3 py-1 rounded-lg border border-blue-800 text-center">
-                            <span class="block text-[10px] text-blue-300 font-bold uppercase tracking-wider -mb-1">Cost</span>
-                            <span class="text-lg font-black text-blue-400">${atk.manaCost}</span>
-                        </div>
-                        <button class="text-gray-600 hover:text-red-500 transition p-1" onclick="deleteAttack(${index})">
+                        ${costBadgeHtml}
+                        <button class="text-gray-500 hover:text-rose-400 transition p-1" onclick="promptDeleteAttack(${index})">
                             <span class="material-icons text-xl">close</span>
                         </button>
                     </div>
                 `;
                 list.appendChild(div);
             });
+        }
+
+        window.promptDeleteAttack = function(index) {
+            const attacks = (currentCharacterData && currentCharacterData.attacks) || [];
+            const atk = attacks[index];
+            if (!atk) return;
+            showConfirm(
+                "Remove Ability?",
+                `Are you sure you want to remove '${atk.name}' from your grimoire?`,
+                "Remove",
+                () => deleteAttack(index)
+            );
         }
 
         window.deleteAttack = async function(index) {
@@ -747,25 +1702,74 @@
             }
         }
 
+        window.autoRollAllDice = function() {
+            turnQueue.spellsToCast.forEach((item, i) => {
+                const s = item.spell;
+                const parts = s.diceParts && s.diceParts.length > 0 ? s.diceParts : [{ amount: s.diceAmount || 1, type: s.diceType || 6 }];
+                
+                parts.forEach((p, pIdx) => {
+                    const input = document.getElementById(`roll-result-${i}-${pIdx}`);
+                    if (input) {
+                        let total = 0;
+                        for (let d = 0; d < (p.amount || 1); d++) {
+                            total += Math.floor(Math.random() * (p.type || 6)) + 1;
+                        }
+                        input.value = total;
+                        input.classList.add('ring-4', 'ring-amber-400');
+                        setTimeout(() => input.classList.remove('ring-4', 'ring-amber-400'), 600);
+                    }
+                });
+
+                const isHeal = s.hpEffectType === 'heal' || (s.isHeal && s.hpEffectType !== 'damage');
+                const isDmg = s.hpEffectType === 'damage';
+                if (isHeal || isDmg) {
+                    const hpInput = document.getElementById(`roll-hp-result-${i}`);
+                    if (hpInput) {
+                        const hpParts = s.hpDiceParts && s.hpDiceParts.length > 0 ? s.hpDiceParts : [{ amount: 1, type: 4 }];
+                        let totalHp = 0;
+                        hpParts.forEach(p => {
+                            for (let d = 0; d < (p.amount || 1); d++) {
+                                totalHp += Math.floor(Math.random() * (p.type || 4)) + 1;
+                            }
+                        });
+                        hpInput.value = totalHp;
+                        hpInput.classList.add('ring-4', isHeal ? 'ring-emerald-400' : 'ring-rose-400');
+                        setTimeout(() => hpInput.classList.remove('ring-4', 'ring-emerald-400', 'ring-rose-400'), 600);
+                    }
+                }
+            });
+        }
+
 
         // --- Rests & Round Logic ---
         window.triggerNextRound = async function() {
             if(!currentCharacterData) return;
             const data = currentCharacterData;
             
-            // Calculate half max mana
-            const regenLimit = Math.floor(data.maxMana / 2);
+            const updates = {};
             
-            // Only regen if below half max
-            if (data.mana < regenLimit) {
-                // Regen amount, but don't exceed the regenLimit
-                let newMana = Math.min(regenLimit, data.mana + (data.passiveRegen || 0));
-                await updateDocData({ mana: newMana });
+            // Calculate half max mana
+            const regenLimit = Math.floor((data.maxMana || 0) / 2);
+            if ((data.mana || 0) < regenLimit) {
+                updates.mana = Math.min(regenLimit, (data.mana || 0) + (data.passiveRegen || 0));
+            }
+
+            // Calculate half max stamina
+            const maxStam = data.maxStamina || 10;
+            const currentStam = data.stamina !== undefined ? data.stamina : maxStam;
+            const stamRegenLimit = Math.floor(maxStam / 2);
+            const stamRegen = data.staminaRegen !== undefined ? data.staminaRegen : 2;
+            if (currentStam < stamRegenLimit) {
+                updates.stamina = Math.min(stamRegenLimit, currentStam + stamRegen);
+            }
+            
+            if (Object.keys(updates).length > 0) {
+                await updateDocData(updates);
                 
                 // Visual Feedback
                 const btn = document.getElementById('btn-next-round');
-                btn.classList.add('ring-4', 'ring-green-400');
-                setTimeout(() => btn.classList.remove('ring-4', 'ring-green-400'), 500);
+                btn.classList.add('ring-4', 'ring-emerald-400');
+                setTimeout(() => btn.classList.remove('ring-4', 'ring-emerald-400'), 500);
             }
         }
 
@@ -773,7 +1777,7 @@
              if (campaignState.shortRestsUsed >= 2) return;
              showConfirm(
                 "Take a Short Rest?", 
-                "Uses 1 of 2 party short rests. Restores Mana to max for everyone. HP must be rolled manually.", 
+                "Uses 1 of 2 party short rests. Restores 25% of Max Mana for everyone. HP must be rolled manually.", 
                 "Rest (1 hr)", 
                 () => triggerSharedRest('short')
              );
@@ -830,6 +1834,91 @@
         }
 
         // --- Screen 5: Create Attack ---
+        window.addDiceRow = function(amount = 1, type = 6, damageType = '') {
+            const container = document.getElementById('dice-rows-container');
+            if (!container) return;
+            const rowId = 'dice-row-' + Date.now() + '-' + Math.floor(Math.random() * 1000);
+            
+            const div = document.createElement('div');
+            div.id = rowId;
+            div.className = "flex items-center gap-2 bg-gray-900/90 p-2.5 rounded-xl border border-amber-900/40 mb-2 shadow-inner";
+            div.innerHTML = `
+                <div class="w-16 shrink-0">
+                    <span class="block text-[9px] text-amber-300 font-serif uppercase">Qty</span>
+                    <input type="number" min="1" value="${amount}" class="dice-qty w-full bg-gray-800 border border-gray-600 rounded-lg px-2 py-1 text-white font-mono text-center text-sm focus:border-amber-400 focus:outline-none">
+                </div>
+                <div class="w-20 shrink-0">
+                    <span class="block text-[9px] text-amber-300 font-serif uppercase">Die</span>
+                    <select class="dice-type w-full bg-gray-800 border border-gray-600 rounded-lg px-1 py-1 text-white text-xs font-mono focus:border-amber-400 focus:outline-none">
+                        <option value="4" ${type == 4 ? 'selected' : ''}>d4</option>
+                        <option value="6" ${type == 6 ? 'selected' : ''}>d6</option>
+                        <option value="8" ${type == 8 ? 'selected' : ''}>d8</option>
+                        <option value="10" ${type == 10 ? 'selected' : ''}>d10</option>
+                        <option value="12" ${type == 12 ? 'selected' : ''}>d12</option>
+                        <option value="20" ${type == 20 ? 'selected' : ''}>d20</option>
+                        <option value="100" ${type == 100 ? 'selected' : ''}>d100</option>
+                    </select>
+                </div>
+                <div class="flex-grow">
+                    <span class="block text-[9px] text-amber-300 font-serif uppercase">Type/Element</span>
+                    <input type="text" value="${damageType}" placeholder="Fire, Radiant..." class="dice-damage-type w-full bg-gray-800 border border-gray-600 rounded-lg px-2 py-1 text-white text-xs focus:border-amber-400 focus:outline-none">
+                </div>
+                <button type="button" onclick="removeDiceRow('${rowId}')" class="text-gray-500 hover:text-rose-400 p-1 self-end mb-0.5 shrink-0">
+                    <span class="material-icons text-lg">close</span>
+                </button>
+            `;
+            container.appendChild(div);
+        }
+
+        window.removeDiceRow = function(rowId) {
+            const row = document.getElementById(rowId);
+            if(row) row.remove();
+        }
+
+        window.addHpDiceRow = function(amount = 1, type = 6) {
+            const container = document.getElementById('hp-dice-rows-container');
+            if (!container) return;
+            const rowId = 'hp-dice-row-' + Date.now() + '-' + Math.floor(Math.random() * 1000);
+            
+            const div = document.createElement('div');
+            div.id = rowId;
+            div.className = "flex items-center gap-2 bg-gray-900/90 p-2.5 rounded-xl border border-emerald-900/40 mb-2 shadow-inner";
+            div.innerHTML = `
+                <div class="w-20 shrink-0">
+                    <span class="block text-[9px] text-emerald-300 font-serif uppercase">Qty</span>
+                    <input type="number" min="1" value="${amount}" class="hp-dice-qty w-full bg-gray-800 border border-gray-600 rounded-lg px-2 py-1 text-white font-mono text-center text-sm focus:border-emerald-400 focus:outline-none">
+                </div>
+                <div class="w-24 shrink-0">
+                    <span class="block text-[9px] text-emerald-300 font-serif uppercase">Die</span>
+                    <select class="hp-dice-type w-full bg-gray-800 border border-gray-600 rounded-lg px-1 py-1 text-white text-xs font-mono focus:border-emerald-400 focus:outline-none">
+                        <option value="4" ${type == 4 ? 'selected' : ''}>d4</option>
+                        <option value="6" ${type == 6 ? 'selected' : ''}>d6</option>
+                        <option value="8" ${type == 8 ? 'selected' : ''}>d8</option>
+                        <option value="10" ${type == 10 ? 'selected' : ''}>d10</option>
+                        <option value="12" ${type == 12 ? 'selected' : ''}>d12</option>
+                        <option value="20" ${type == 20 ? 'selected' : ''}>d20</option>
+                    </select>
+                </div>
+                <button type="button" onclick="removeDiceRow('${rowId}')" class="text-gray-500 hover:text-rose-400 p-1 self-end mb-0.5 ml-auto shrink-0">
+                    <span class="material-icons text-lg">close</span>
+                </button>
+            `;
+            container.appendChild(div);
+        }
+
+        window.toggleHpEffectFields = function(e) {
+            const val = e.target.value;
+            const hpSec = document.getElementById('hp-dice-section');
+            if (val === 'heal' || val === 'damage') {
+                hpSec.classList.remove('hidden');
+                if (document.getElementById('hp-dice-rows-container').children.length === 0) {
+                    addHpDiceRow(1, 4);
+                }
+            } else {
+                hpSec.classList.add('hidden');
+            }
+        }
+
         function renderIconSelect() {
             const container = document.getElementById('icon-selector-grid');
             container.innerHTML = '';
@@ -837,8 +1926,8 @@
 
             spellIcons.forEach(icon => {
                 const div = document.createElement('div');
-                div.className = `p-2 rounded-lg border-2 flex items-center justify-center cursor-pointer transition 
-                    ${selectedInput.value === icon ? 'border-[var(--char-c1)] bg-[var(--char-c1)]/30' : 'border-gray-700 bg-gray-800 hover:border-gray-500'}`;
+                div.className = `p-2 rounded-xl border flex items-center justify-center cursor-pointer transition 
+                    ${selectedInput.value === icon ? 'border-amber-400 bg-amber-950/60 shadow-[0_0_10px_rgba(212,175,55,0.4)]' : 'border-gray-700 bg-slate-900/80 hover:border-amber-600/50'}`;
                 div.innerHTML = `<span class="material-icons text-white">${icon}</span>`;
                 
                 div.addEventListener('click', () => {
@@ -854,8 +1943,12 @@
         window.showCreateAttack = function() {
             populateSpellSelector();
             document.getElementById('form-attack').reset();
+            document.getElementById('dice-rows-container').innerHTML = '';
+            document.getElementById('hp-dice-rows-container').innerHTML = '';
+            addDiceRow(1, 6, 'Fire');
             renderIconSelect();
             document.getElementById('spell-creation-fields').classList.remove('hidden');
+            document.getElementById('hp-dice-section').classList.add('hidden');
             showScreen('attack');
         }
 
@@ -872,6 +1965,9 @@
                 fields.classList.remove('hidden');
                 preview.classList.add('hidden');
                 document.getElementById('form-attack').reset();
+                document.getElementById('dice-rows-container').innerHTML = '';
+                document.getElementById('hp-dice-rows-container').innerHTML = '';
+                addDiceRow(1, 6, 'Fire');
                 renderIconSelect();
             } else {
                 fields.classList.add('hidden');
@@ -879,14 +1975,19 @@
                 
                 const spell = availableSpells.find(s => s.id === val);
                 if(spell) {
+                    let costStr = [];
+                    if ((spell.manaCost || 0) > 0) costStr.push(`Mana: ${spell.manaCost}`);
+                    if ((spell.staminaCost || 0) > 0) costStr.push(`Stamina: ${spell.staminaCost}`);
+                    if (costStr.length === 0) costStr.push('Cost: Free');
+
                     preview.innerHTML = `
                         <div class="flex items-center gap-3">
-                            <div class="w-10 h-10 rounded-full flex items-center justify-center text-white shadow-lg" style="background-color: ${spell.color || '#3b82f6'}">
+                            <div class="w-10 h-10 rounded-2xl flex items-center justify-center text-white shadow-lg border border-amber-500/40" style="background-color: ${spell.color || '#3b82f6'}">
                                 <span class="material-icons">${spell.icon || 'bolt'}</span>
                             </div>
                             <div>
-                                <h4 class="text-white font-bold">${spell.name}</h4>
-                                <p class="text-xs text-gray-400">Cost: ${spell.manaCost} | ${spell.diceAmount}d${spell.diceType} ${spell.damageType}</p>
+                                <h4 class="text-white font-serif font-bold">${spell.name}</h4>
+                                <p class="text-xs text-amber-200/80">${costStr.join(' | ')} | ${formatSpellDice(spell)}</p>
                             </div>
                         </div>
                     `;
@@ -901,19 +2002,53 @@
             let spellToAdd = null;
 
             if (selectorVal === 'new') {
+                const name = document.getElementById('attack-name').value.trim();
+                if (!name) return;
+
+                const diceRowEls = document.querySelectorAll('#dice-rows-container > div');
+                const diceParts = [];
+                diceRowEls.forEach(row => {
+                    const qtyInput = row.querySelector('.dice-qty');
+                    const typeInput = row.querySelector('.dice-type');
+                    const dmgInput = row.querySelector('.dice-damage-type');
+                    if (qtyInput && typeInput) {
+                        diceParts.push({
+                            amount: parseInt(qtyInput.value) || 1,
+                            type: parseInt(typeInput.value) || 6,
+                            damageType: dmgInput ? dmgInput.value.trim() : ''
+                        });
+                    }
+                });
+
+                const hpEffectType = document.getElementById('attack-hp-effect').value;
+                const hpDiceRowEls = document.querySelectorAll('#hp-dice-rows-container > div');
+                const hpDiceParts = [];
+                hpDiceRowEls.forEach(row => {
+                    const qtyInput = row.querySelector('.hp-dice-qty');
+                    const typeInput = row.querySelector('.hp-dice-type');
+                    if (qtyInput && typeInput) {
+                        hpDiceParts.push({
+                            amount: parseInt(qtyInput.value) || 1,
+                            type: parseInt(typeInput.value) || 6
+                        });
+                    }
+                });
+
                 spellToAdd = {
-                    name: document.getElementById('attack-name').value.trim(),
+                    name: name,
                     level: parseInt(document.getElementById('attack-level').value) || 1,
                     manaCost: parseInt(document.getElementById('attack-cost').value) || 0,
-                    diceAmount: parseInt(document.getElementById('attack-dice-amount').value) || 1,
-                    diceType: parseInt(document.getElementById('attack-dice-type').value) || 6,
-                    damageType: document.getElementById('attack-damage-type').value.trim(),
-                    isHeal: document.getElementById('attack-is-heal').checked,
+                    staminaCost: parseInt(document.getElementById('attack-stamina-cost').value) || 0,
+                    diceParts: diceParts.length > 0 ? diceParts : [{ amount: 1, type: 6, damageType: '' }],
+                    diceAmount: diceParts[0] ? diceParts[0].amount : 1,
+                    diceType: diceParts[0] ? diceParts[0].type : 6,
+                    damageType: diceParts[0] ? diceParts[0].damageType : '',
+                    hpEffectType: hpEffectType,
+                    hpDiceParts: hpDiceParts,
+                    isHeal: hpEffectType === 'heal',
                     icon: document.getElementById('attack-icon').value,
                     color: document.getElementById('attack-color').value
                 };
-
-                if (!spellToAdd.name) return;
 
                 try {
                     const newSpellRef = doc(collection(db, "campaigns", currentCampaignId, "spells"));
@@ -941,12 +2076,142 @@
             }
         }
 
+        // --- Standalone Dice Simulator ---
+        let selectedSimDieType = 6;
+        let simRollHistory = [];
+
+        window.openDiceSimulator = function() {
+            const modal = document.getElementById('modal-dice-simulator');
+            if (modal) modal.classList.remove('hidden');
+        }
+
+        window.closeDiceSimulator = function() {
+            const modal = document.getElementById('modal-dice-simulator');
+            if (modal) modal.classList.add('hidden');
+        }
+
+        window.selectSimDie = function(die) {
+            selectedSimDieType = die;
+            const buttons = document.querySelectorAll('.sim-die-btn');
+            buttons.forEach(btn => {
+                if (btn.innerText.trim() === `d${die}`) {
+                    btn.className = "sim-die-btn py-2 bg-amber-900/60 text-amber-300 rounded-xl font-mono text-sm font-bold border border-amber-500 shadow-md";
+                } else {
+                    btn.className = "sim-die-btn py-2 bg-slate-800 text-amber-200/90 rounded-xl font-mono text-sm font-bold border border-amber-900/40 hover:border-amber-400";
+                }
+            });
+        }
+
+        window.rollSimDice = function() {
+            const qtyInput = document.getElementById('sim-qty');
+            const modInput = document.getElementById('sim-mod');
+            
+            const qty = Math.max(1, Math.min(20, parseInt(qtyInput.value) || 1));
+            const mod = parseInt(modInput.value) || 0;
+            const die = selectedSimDieType;
+
+            const rolls = [];
+            let sum = 0;
+            for (let i = 0; i < qty; i++) {
+                const val = Math.floor(Math.random() * die) + 1;
+                rolls.push(val);
+                sum += val;
+            }
+            const total = sum + mod;
+
+            const resultBox = document.getElementById('sim-result-box');
+            const listEl = document.getElementById('sim-rolls-list');
+            const totalEl = document.getElementById('sim-total-display');
+            
+            resultBox.classList.remove('hidden');
+            let modText = '';
+            if (mod !== 0) {
+                modText = mod > 0 ? ` + ${mod}` : ` - ${Math.abs(mod)}`;
+            }
+            listEl.innerText = `Rolls: [${rolls.join(', ')}]${modText}`;
+            totalEl.innerText = total;
+
+            if (die === 20 && rolls.includes(20)) {
+                totalEl.className = "text-4xl font-mono font-black text-amber-300 animate-bounce drop-shadow-[0_0_15px_rgba(252,211,77,0.9)]";
+            } else {
+                totalEl.className = "text-4xl font-mono font-black text-amber-400 drop-shadow-[0_0_10px_rgba(212,175,55,0.6)]";
+            }
+
+            // History
+            const formula = `${qty}d${die}${mod !== 0 ? (mod > 0 ? '+' + mod : mod) : ''}`;
+            simRollHistory.unshift({ formula, total, rolls });
+            if (simRollHistory.length > 10) simRollHistory.pop();
+
+            const historyEl = document.getElementById('sim-history-log');
+            historyEl.innerHTML = simRollHistory.map(h => `
+                <div class="flex justify-between items-center py-1 border-b border-amber-900/20">
+                    <span class="text-amber-300 font-bold">${h.formula}</span>
+                    <span class="text-amber-200/60 font-mono text-[11px]">[${h.rolls.join(',')}]</span>
+                    <span class="font-bold text-white font-mono text-sm">${h.total}</span>
+                </div>
+            `).join('');
+        }
+
         // --- Initialization ---
-        // Starts at Campaign screen
-        loadCampaignMenu();
+        if (sessionStorage.getItem('strixhaven_global_auth') === 'true') {
+            isGlobalAuthenticated = true;
+            loadCampaignMenu();
+        } else {
+            showScreen('globalAuth');
+        }
 
     </script>
     <style>
+        .font-serif { font-family: 'Cinzel', serif; }
+        .font-medieval { font-family: 'MedievalSharp', cursive, serif; }
+
+        @keyframes auraShift {
+            0% { background-position: 0% 50%; }
+            50% { background-position: 100% 50%; }
+            100% { background-position: 0% 50%; }
+        }
+
+        @keyframes floatOrb {
+            0%, 100% { transform: translate(0px, 0px) scale(1); }
+            50% { transform: translate(30px, -20px) scale(1.1); }
+        }
+
+        .animated-bg {
+            background: linear-gradient(-45deg, #090d16, #111827, #1e1b4b, #0f172a);
+            background-size: 400% 400%;
+            animation: auraShift 15s ease infinite;
+        }
+
+        @keyframes emberRise {
+            0% {
+                transform: translate3d(0, 105vh, 0) scale(0.5);
+                opacity: 0;
+            }
+            20% {
+                opacity: 0.85;
+            }
+            80% {
+                opacity: 0.6;
+            }
+            100% {
+                transform: translate3d(var(--dx, 20px), -10vh, 0) scale(1.2);
+                opacity: 0;
+            }
+        }
+
+        .ember {
+            position: absolute;
+            width: 4px;
+            height: 4px;
+            border-radius: 50%;
+            background: radial-gradient(circle, #fbbf24 30%, #d97706 70%, transparent 100%);
+            box-shadow: 0 0 8px #f59e0b, 0 0 14px #d97706;
+            will-change: transform, opacity;
+            animation: emberRise var(--duration, 14s) linear infinite;
+            animation-delay: var(--delay, 0s);
+            pointer-events: none;
+        }
+
         .hide-scrollbar::-webkit-scrollbar { display: none; }
         .hide-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
         
@@ -1008,27 +2273,70 @@
         }
     </style>
 </head>
-<body class="min-h-screen flex flex-col items-center bg-gray-900 transition-colors duration-500">
+<body class="min-h-screen flex flex-col items-center animated-bg transition-colors duration-500 relative overflow-x-hidden">
+
+    <!-- Ambient Magical Glow & Mobile-Optimized Ember Particles -->
+    <div class="fixed inset-0 pointer-events-none overflow-hidden z-0">
+        <div class="absolute -top-32 -left-32 w-96 h-96 bg-purple-600/15 rounded-full blur-3xl animate-[floatOrb_12s_infinite_ease-in-out]"></div>
+        <div class="absolute top-1/2 -right-32 w-96 h-96 bg-blue-600/15 rounded-full blur-3xl animate-[floatOrb_16s_infinite_ease-in-out_reverse]"></div>
+        <div class="absolute -bottom-32 left-1/3 w-96 h-96 bg-indigo-600/15 rounded-full blur-3xl animate-[floatOrb_14s_infinite_ease-in-out]"></div>
+        
+        <!-- Hardware-Accelerated Floating Ember Particles -->
+        <div class="ember" style="left: 8%; --dx: 30px; --duration: 13s; --delay: -2s;"></div>
+        <div class="ember" style="left: 18%; --dx: -25px; --duration: 16s; --delay: -8s;"></div>
+        <div class="ember" style="left: 28%; --dx: 40px; --duration: 11s; --delay: -4s;"></div>
+        <div class="ember" style="left: 38%; --dx: -15px; --duration: 19s; --delay: -11s;"></div>
+        <div class="ember" style="left: 48%; --dx: 25px; --duration: 14s; --delay: -6s;"></div>
+        <div class="ember" style="left: 58%; --dx: -35px; --duration: 17s; --delay: -1s;"></div>
+        <div class="ember" style="left: 68%; --dx: 20px; --duration: 12s; --delay: -9s;"></div>
+        <div class="ember" style="left: 78%; --dx: -20px; --duration: 15s; --delay: -3s;"></div>
+        <div class="ember" style="left: 88%; --dx: 35px; --duration: 20s; --delay: -13s;"></div>
+        <div class="ember" style="left: 95%; --dx: -10px; --duration: 13s; --delay: -7s;"></div>
+        <div class="ember" style="left: 14%; --dx: 15px; --duration: 18s; --delay: -15s;"></div>
+        <div class="ember" style="left: 82%; --dx: -30px; --duration: 14s; --delay: -10s;"></div>
+    </div>
 
     <!-- Container scales up to tablet size, centers on desktop -->
-    <div class="w-full max-w-2xl relative min-h-screen flex flex-col shadow-2xl">
+    <div class="w-full max-w-2xl relative min-h-screen flex flex-col shadow-2xl z-10">
         
+        <!-- ========================================= -->
+        <!-- SCREEN -1: GLOBAL AUTH                    -->
+        <!-- ========================================= -->
+        <div id="screen-global-auth" class="w-full p-6 flex-grow flex flex-col items-center justify-center bg-slate-950 z-50">
+            <div class="text-center mb-10">
+                <span class="material-icons text-7xl text-amber-400 mb-4 drop-shadow-[0_0_25px_rgba(212,175,55,0.6)]">school</span>
+                <h1 class="text-4xl font-extrabold tracking-tight text-amber-300 font-serif">Strixhaven</h1>
+                <p class="text-amber-200/60 mt-2 font-serif font-bold uppercase tracking-widest text-xs">Arcana Academy Gate</p>
+            </div>
+
+            <form onsubmit="submitGlobalAuth(event)" class="w-full max-w-sm bg-slate-900/90 p-8 rounded-3xl border border-amber-600/40 shadow-2xl backdrop-blur-md">
+                <div class="mb-6">
+                    <label class="block text-xs text-amber-300 font-serif uppercase font-bold mb-2 text-center">Enter Access Sigil Code</label>
+                    <input type="password" id="global-password" required autocapitalize="none" autocorrect="off" spellcheck="false" class="w-full bg-gray-900 border border-amber-900/60 rounded-xl px-4 py-4 text-white focus:outline-none focus:border-amber-400 text-center text-xl tracking-widest font-mono" placeholder="••••••••">
+                    <p id="global-auth-error" class="text-rose-400 text-sm text-center mt-3 hidden font-serif">Access Sigil Invalid.</p>
+                </div>
+                <button type="submit" class="w-full py-4 bg-gradient-to-r from-amber-700 via-amber-600 to-amber-700 hover:from-amber-600 hover:to-amber-500 text-white rounded-xl font-serif font-bold text-lg shadow-lg shadow-amber-900/50 transition transform hover:-translate-y-0.5">
+                    Enter Archives
+                </button>
+            </form>
+        </div>
+
         <!-- ========================================= -->
         <!-- SCREEN 0: CAMPAIGN MENU                   -->
         <!-- ========================================= -->
-        <div id="screen-campaigns" class="w-full p-6 flex-grow flex flex-col">
+        <div id="screen-campaigns" class="w-full hidden p-6 flex-grow flex flex-col">
             <div class="text-center mb-10 pt-12">
-                <span class="material-icons text-7xl text-blue-500 mb-4 drop-shadow-[0_0_20px_rgba(59,130,246,0.6)]">public</span>
-                <h1 class="text-4xl font-extrabold tracking-tight text-white">Select Campaign</h1>
-                <p class="text-gray-400 mt-2 font-medium">Choose your adventure</p>
+                <span class="material-icons text-7xl text-amber-400 mb-4 drop-shadow-[0_0_20px_rgba(212,175,55,0.5)]">auto_stories</span>
+                <h1 class="text-4xl font-extrabold tracking-tight text-amber-300 font-serif">Campaign Archives</h1>
+                <p class="text-amber-200/60 mt-2 font-serif">Choose your chronicle</p>
             </div>
 
             <div id="campaign-list" class="space-y-4 mb-8 flex-grow">
                 <!-- Campaigns injected here -->
             </div>
             
-            <button class="w-full py-4 bg-gray-800 text-gray-500 font-bold rounded-xl border border-gray-700 flex items-center justify-center gap-2 cursor-not-allowed">
-                <span class="material-icons">add</span> Create New Campaign (Coming Soon)
+            <button class="w-full py-4 bg-slate-900/60 text-amber-200/40 font-serif font-bold rounded-xl border border-amber-900/40 flex items-center justify-center gap-2 cursor-not-allowed">
+                <span class="material-icons">add</span> Create New Realm (Coming Soon)
             </button>
         </div>
 
@@ -1036,86 +2344,144 @@
         <!-- SCREEN 1: CHARACTER MENU                  -->
         <!-- ========================================= -->
         <div id="screen-menu" class="w-full hidden p-6 flex-grow flex flex-col">
-            <button onclick="backToCampaigns()" class="mb-4 text-gray-400 hover:text-white flex items-center gap-1 transition w-fit">
-                <span class="material-icons">arrow_back</span> Campaigns
-            </button>
-            
-            <div class="text-center mb-10 pt-4">
-                <span class="material-icons text-6xl text-purple-500 mb-4 drop-shadow-[0_0_15px_rgba(168,85,247,0.5)]">auto_stories</span>
-                <h1 id="menu-campaign-title" class="text-4xl font-extrabold tracking-tight bg-clip-text text-transparent bg-gradient-to-r from-blue-400 to-purple-500">Campaign Name</h1>
-                <p class="text-gray-400 mt-2 font-medium tracking-widest uppercase">Student Roster</p>
+            <div class="flex justify-between items-center mb-8 pt-6">
+                <div>
+                    <h1 id="menu-campaign-title" class="text-3xl font-serif font-extrabold tracking-tight text-amber-300">Campaign Roster</h1>
+                    <p class="text-amber-200/60 font-serif text-sm">Select your student wizard</p>
+                </div>
+                <button onclick="backToCampaigns()" class="p-2.5 bg-slate-900/80 text-amber-300 hover:text-white rounded-xl transition border border-amber-600/40">
+                    <span class="material-icons">arrow_back</span>
+                </button>
             </div>
 
-            <div id="character-list" class="space-y-4 mb-8 flex-grow overflow-y-auto pr-2">
+            <div id="character-list" class="space-y-4 mb-8 flex-grow">
                 <!-- Characters injected here -->
             </div>
             
-            <button onclick="showCreate()" class="w-full py-5 bg-gradient-to-r from-blue-600 to-purple-600 hover:from-blue-500 hover:to-purple-500 text-white rounded-2xl font-bold text-lg shadow-xl shadow-purple-900/50 transition transform hover:-translate-y-1">
-                + Enroll New Student
-            </button>
+            <div class="flex gap-2 mb-8">
+                <button onclick="showCreate()" class="flex-1 py-4 bg-gradient-to-r from-purple-800 to-indigo-900 hover:from-purple-700 hover:to-indigo-800 text-amber-200 border border-purple-500/40 font-serif font-bold rounded-2xl shadow-xl transition flex items-center justify-center gap-2 text-sm">
+                    <span class="material-icons text-lg">person_add</span> Enroll Student
+                </button>
+                <button onclick="showDMCompendium()" class="flex-1 py-4 bg-gradient-to-r from-amber-800 to-amber-900 hover:from-amber-700 hover:to-amber-800 text-amber-200 border border-amber-500/40 font-serif font-bold rounded-2xl shadow-xl transition flex items-center justify-center gap-2 text-sm">
+                    <span class="material-icons text-lg">auto_stories</span> DM Compendium
+                </button>
+            </div>
         </div>
 
         <!-- ========================================= -->
-        <!-- SCREEN 2: AUTH MODAL                      -->
+        <!-- SCREEN 7: DM COMPENDIUM MANAGER           -->
         <!-- ========================================= -->
-        <div id="screen-auth" class="w-full hidden p-6 flex items-center justify-center bg-black/80 backdrop-blur-sm absolute inset-0 z-50">
-            <div class="bg-gray-800 p-8 rounded-3xl border border-gray-700 shadow-2xl w-full max-w-sm">
-                <div class="text-center mb-6">
-                    <div class="w-16 h-16 rounded-full bg-blue-900/50 flex items-center justify-center mx-auto mb-4">
-                        <span class="material-icons text-3xl text-blue-400">lock</span>
-                    </div>
-                    <h2 id="auth-title" class="text-2xl font-bold text-white">Access Sheet</h2>
-                    <p class="text-sm text-gray-400 mt-1">Enter character password</p>
+        <div id="screen-dm-compendium" class="w-full hidden p-6 overflow-y-auto bg-slate-950 flex flex-col min-h-screen">
+            <div class="flex justify-between items-center mb-6 pt-4">
+                <div>
+                    <h2 class="text-3xl font-serif font-extrabold text-amber-300 flex items-center gap-2">
+                        <span class="material-icons text-amber-400 text-3xl">auto_stories</span> DM Compendium
+                    </h2>
+                    <p class="text-amber-200/60 font-serif text-sm">Manage Master Spells & Vault Items Catalog</p>
                 </div>
-                
-                <input type="password" id="auth-password" class="w-full bg-gray-900 border border-gray-600 rounded-xl px-4 py-4 text-white focus:outline-none focus:border-blue-500 mb-2 text-center text-xl tracking-widest" placeholder="••••••••">
-                <p id="auth-error" class="text-red-400 text-sm text-center mb-6 hidden">Incorrect password.</p>
-                
-                <div class="flex gap-4">
-                    <button onclick="cancelAuth()" class="flex-1 py-4 bg-gray-700 hover:bg-gray-600 text-white rounded-xl transition font-medium">Cancel</button>
-                    <button id="btn-auth-submit" onclick="submitAuth()" class="flex-1 py-4 bg-blue-600 hover:bg-blue-500 text-white rounded-xl transition font-bold shadow-lg shadow-blue-900/50">Unlock</button>
+                <button onclick="showScreen('menu')" class="p-2.5 bg-slate-900/80 text-amber-300 hover:text-white rounded-xl transition border border-amber-600/40">
+                    <span class="material-icons">arrow_back</span>
+                </button>
+            </div>
+
+            <!-- Tab Switcher (Spells vs Items) -->
+            <div class="flex gap-2 mb-6 bg-slate-900/90 p-1.5 rounded-2xl border border-amber-600/40 shadow-inner">
+                <button id="dm-tab-spells" onclick="switchDMTab('spells')" class="flex-1 py-2.5 rounded-xl font-serif font-bold text-sm transition bg-amber-400 text-slate-950 shadow-md">
+                    📜 Master Spells
+                </button>
+                <button id="dm-tab-items" onclick="switchDMTab('items')" class="flex-1 py-2.5 rounded-xl font-serif font-bold text-sm transition text-amber-200/80 hover:text-white">
+                    🎒 Master Items
+                </button>
+            </div>
+
+            <!-- Spells Catalog View -->
+            <div id="dm-view-spells" class="space-y-4 flex-grow">
+                <div class="flex justify-between items-center mb-2">
+                    <span class="text-xs font-serif text-amber-300 uppercase tracking-wider font-bold">Campaign Spells Library</span>
+                    <button onclick="showCreateAttack()" class="text-xs bg-gradient-to-r from-amber-700 to-amber-600 hover:from-amber-600 hover:to-amber-500 text-white font-serif font-bold px-3 py-1.5 rounded-xl shadow-md flex items-center gap-1">
+                        <span class="material-icons text-xs">add</span> Add Spell
+                    </button>
+                </div>
+                <input type="text" id="dm-spells-search-input" oninput="renderDMCompendium()" placeholder="🔍 Search catalog spells..." class="w-full bg-gray-900/90 border border-amber-900/60 rounded-xl px-4 py-2.5 text-xs text-white placeholder-amber-200/40 focus:outline-none focus:border-amber-400 font-serif">
+                <div id="dm-spells-list" class="space-y-3">
+                    <!-- Injected dynamically -->
+                </div>
+            </div>
+
+            <!-- Items Catalog View -->
+            <div id="dm-view-items" class="hidden space-y-4 flex-grow">
+                <div class="flex justify-between items-center mb-2">
+                    <span class="text-xs font-serif text-amber-300 uppercase tracking-wider font-bold">Campaign Vault Items Library</span>
+                    <button onclick="openCreateItemModal()" class="text-xs bg-gradient-to-r from-amber-700 to-amber-600 hover:from-amber-600 hover:to-amber-500 text-white font-serif font-bold px-3 py-1.5 rounded-xl shadow-md flex items-center gap-1">
+                        <span class="material-icons text-xs">add</span> Add Catalog Item
+                    </button>
+                </div>
+                <input type="text" id="dm-items-search-input" oninput="renderDMCompendium()" placeholder="🔍 Search catalog items..." class="w-full bg-gray-900/90 border border-amber-900/60 rounded-xl px-4 py-2.5 text-xs text-white placeholder-amber-200/40 focus:outline-none focus:border-amber-400 font-serif">
+                <div id="dm-items-list" class="space-y-3">
+                    <!-- Injected dynamically -->
                 </div>
             </div>
         </div>
 
         <!-- ========================================= -->
-        <!-- SCREEN 3: CREATE CHARACTER                -->
+        <!-- SCREEN 2: CHARACTER AUTH/GATE             -->
         <!-- ========================================= -->
-        <div id="screen-create" class="w-full hidden p-6 overflow-y-auto bg-gray-900 absolute inset-0 z-40">
-            <h2 class="text-3xl font-extrabold mb-6 flex items-center gap-3 text-white">
-                <span class="material-icons text-purple-400 text-4xl">person_add</span> Enroll Student
+        <div id="screen-auth" class="w-full hidden p-6 flex-grow flex flex-col items-center justify-center bg-slate-950/90 absolute inset-0 z-50 backdrop-blur-md">
+            <div class="text-center mb-8">
+                <div class="w-20 h-20 bg-slate-900/90 rounded-full flex items-center justify-center mx-auto mb-4 border-2 border-amber-600/40 shadow-xl">
+                    <span class="material-icons text-4xl text-amber-400">lock</span>
+                </div>
+                <h2 id="auth-title" class="text-3xl font-serif font-bold text-amber-300">Unlock Grimoire</h2>
+                <p class="text-amber-200/60 mt-2 font-serif text-sm">Enter the student's secret passcode.</p>
+            </div>
+
+            <div class="w-full max-w-sm space-y-4">
+                <input type="password" id="auth-password" class="w-full bg-gray-900 border border-amber-900/60 rounded-xl px-4 py-4 text-white focus:outline-none focus:border-amber-400 text-center text-xl tracking-widest font-mono" placeholder="••••••••">
+                <p id="auth-error" class="text-rose-400 text-sm text-center hidden font-serif">Incorrect passcode.</p>
+                
+                <button id="btn-auth-submit" onclick="submitAuth()" class="w-full py-4 bg-gradient-to-r from-amber-700 to-amber-600 hover:from-amber-600 hover:to-amber-500 text-white rounded-xl font-serif font-bold shadow-lg transition">Unlock Sheet</button>
+                <button onclick="cancelAuth()" class="w-full py-4 bg-slate-800 hover:bg-slate-700 text-amber-200/80 rounded-xl font-serif font-medium transition border border-amber-900/40">Cancel</button>
+            </div>
+        </div>
+
+        <!-- ========================================= -->
+        <!-- SCREEN 3: CREATE / EDIT CHARACTER         -->
+        <!-- ========================================= -->
+        <div id="screen-create" class="w-full hidden p-6 overflow-y-auto bg-slate-950 absolute inset-0 z-40">
+            <h2 id="create-screen-title" class="text-3xl font-serif font-extrabold mb-6 flex items-center gap-3 text-amber-300">
+                <span class="material-icons text-amber-400 text-4xl">person_add</span> Enroll Student
             </h2>
             
             <form id="form-create" onsubmit="submitCreate(event)" class="space-y-6 pb-8">
                 <!-- Basic Info -->
-                <div class="bg-gray-800 p-5 rounded-2xl border border-gray-700 space-y-4">
+                <div class="bg-slate-900/90 p-5 rounded-3xl border border-amber-600/40 space-y-4 shadow-xl backdrop-blur-md">
                     <div>
-                        <label class="block text-sm text-gray-400 mb-1">Character Name</label>
-                        <input type="text" id="create-name" required class="w-full bg-gray-900 border border-gray-600 rounded-lg px-4 py-3 text-white focus:outline-none focus:border-purple-500">
+                        <label class="block text-xs font-serif font-bold text-amber-300 uppercase tracking-wider mb-1">Character Name</label>
+                        <input type="text" id="create-name" required class="w-full bg-gray-900 border border-amber-900/60 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-amber-400 font-serif">
                     </div>
                     <div>
-                        <label class="block text-sm text-gray-400 mb-1">Secret Password (To edit/delete later)</label>
-                        <input type="password" id="create-password" required class="w-full bg-gray-900 border border-gray-600 rounded-lg px-4 py-3 text-white focus:outline-none focus:border-purple-500">
+                        <label class="block text-xs font-serif font-bold text-amber-300 uppercase tracking-wider mb-1">Secret Passcode (To edit/delete later)</label>
+                        <input type="password" id="create-password" required class="w-full bg-gray-900 border border-amber-900/60 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-amber-400 font-mono">
                     </div>
                     <div>
-                        <label class="block text-sm text-gray-400 mb-1">Portrait Image URL (Optional)</label>
-                        <input type="url" id="create-portrait" class="w-full bg-gray-900 border border-gray-600 rounded-lg px-4 py-3 text-white focus:outline-none focus:border-purple-500" placeholder="https://...">
+                        <label class="block text-xs font-serif font-bold text-amber-300 uppercase tracking-wider mb-1">Portrait Image URL (Optional)</label>
+                        <input type="url" id="create-portrait" class="w-full bg-gray-900 border border-amber-900/60 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-amber-400 text-sm" placeholder="https://...">
                     </div>
                 </div>
 
                 <!-- Lore/Class -->
-                <div class="bg-gray-800 p-5 rounded-2xl border border-gray-700 grid grid-cols-2 gap-4">
+                <div class="bg-slate-900/90 p-5 rounded-3xl border border-amber-600/40 grid grid-cols-2 gap-4 shadow-xl backdrop-blur-md">
                     <div class="col-span-2">
-                        <label class="block text-sm text-gray-400 mb-1">Class</label>
-                        <input type="text" id="create-class" class="w-full bg-gray-900 border border-gray-600 rounded-lg px-4 py-3 text-white focus:outline-none focus:border-purple-500" placeholder="Wizard">
+                        <label class="block text-xs font-serif font-bold text-amber-300 uppercase tracking-wider mb-1">Class</label>
+                        <input type="text" id="create-class" class="w-full bg-gray-900 border border-amber-900/60 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-amber-400 font-serif" placeholder="Wizard">
                     </div>
                     <div>
-                        <label class="block text-sm text-gray-400 mb-1">Species</label>
-                        <input type="text" id="create-species" class="w-full bg-gray-900 border border-gray-600 rounded-lg px-4 py-3 text-white focus:outline-none focus:border-purple-500" placeholder="Owlin">
+                        <label class="block text-xs font-serif font-bold text-amber-300 uppercase tracking-wider mb-1">Species</label>
+                        <input type="text" id="create-species" class="w-full bg-gray-900 border border-amber-900/60 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-amber-400 font-serif" placeholder="Owlin">
                     </div>
                     <div>
-                        <label class="block text-sm text-gray-400 mb-1">School</label>
-                        <select id="create-school" class="w-full bg-gray-900 border border-gray-600 rounded-lg px-4 py-3 text-white focus:outline-none focus:border-purple-500">
+                        <label class="block text-xs font-serif font-bold text-amber-300 uppercase tracking-wider mb-1">Strixhaven College</label>
+                        <select id="create-school" class="w-full bg-gray-900 border border-amber-900/60 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-amber-400 font-serif text-sm">
                             <option value="Lorehold">Lorehold</option>
                             <option value="Prismari">Prismari</option>
                             <option value="Quandrix">Quandrix</option>
@@ -1124,60 +2490,69 @@
                         </select>
                     </div>
                     <div>
-                        <label class="block text-sm text-gray-400 mb-1">Level</label>
-                        <input type="number" id="create-level" value="1" min="1" max="20" class="w-full bg-gray-900 border border-gray-600 rounded-lg px-4 py-3 text-white focus:outline-none focus:border-purple-500">
+                        <label class="block text-xs font-serif font-bold text-amber-300 uppercase tracking-wider mb-1">Level</label>
+                        <input type="number" id="create-level" value="1" min="1" max="20" class="w-full bg-gray-900 border border-amber-900/60 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-amber-400 font-mono text-center">
                     </div>
                     <div>
-                        <label class="block text-sm text-gray-400 mb-1">Armor Class</label>
-                        <input type="number" id="create-ac" value="10" class="w-full bg-gray-900 border border-gray-600 rounded-lg px-4 py-3 text-white focus:outline-none focus:border-purple-500">
+                        <label class="block text-xs font-serif font-bold text-amber-300 uppercase tracking-wider mb-1">Armor Class (AC)</label>
+                        <input type="number" id="create-ac" value="10" class="w-full bg-gray-900 border border-amber-900/60 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-amber-400 font-mono text-center">
                     </div>
                 </div>
 
                 <!-- Vitals & Reg -->
-                <div class="bg-gray-800 p-5 rounded-2xl border border-gray-700 grid grid-cols-2 gap-4">
+                <div class="bg-slate-900/90 p-5 rounded-3xl border border-amber-600/40 grid grid-cols-3 gap-3 shadow-xl backdrop-blur-md">
                     <div>
-                        <label class="block text-sm text-gray-400 mb-1">Max Health (HP)</label>
-                        <input type="number" id="create-hp" required class="w-full bg-gray-900 border border-gray-600 rounded-lg px-4 py-3 text-white focus:outline-none focus:border-red-500 text-center text-lg font-bold">
+                        <label class="block text-[11px] font-serif font-bold text-rose-400 uppercase tracking-wider mb-1">Max HP</label>
+                        <input type="number" id="create-hp" required class="w-full bg-gray-900 border border-rose-900/60 rounded-xl px-2 py-3 text-white focus:outline-none focus:border-rose-400 text-center text-lg font-mono font-bold">
                     </div>
                     <div>
-                        <label class="block text-sm text-gray-400 mb-1">Max Mana</label>
-                        <input type="number" id="create-mana" required class="w-full bg-gray-900 border border-gray-600 rounded-lg px-4 py-3 text-white focus:outline-none focus:border-blue-500 text-center text-lg font-bold">
+                        <label class="block text-[11px] font-serif font-bold text-sky-400 uppercase tracking-wider mb-1">Max Mana</label>
+                        <input type="number" id="create-mana" required class="w-full bg-gray-900 border border-sky-900/60 rounded-xl px-2 py-3 text-white focus:outline-none focus:border-sky-400 text-center text-lg font-mono font-bold">
                     </div>
-                    <div class="col-span-2">
-                        <label class="block text-sm text-gray-400 mb-1">Passive Mana Regen (Per Round)</label>
-                        <input type="number" id="create-regen" value="1" min="0" class="w-full bg-gray-900 border border-gray-600 rounded-lg px-4 py-3 text-white focus:outline-none focus:border-green-500 text-center text-lg font-bold">
-                        <p class="text-xs text-gray-500 mt-1 text-center">Regenerates up to half max mana.</p>
+                    <div>
+                        <label class="block text-[11px] font-serif font-bold text-amber-400 uppercase tracking-wider mb-1">Max Stamina</label>
+                        <input type="number" id="create-stamina" required value="10" class="w-full bg-gray-900 border border-amber-900/60 rounded-xl px-2 py-3 text-white focus:outline-none focus:border-amber-400 text-center text-lg font-mono font-bold">
+                    </div>
+                    <div class="col-span-3 grid grid-cols-2 gap-3 pt-2 border-t border-amber-900/30">
+                        <div>
+                            <label class="block text-[10px] font-serif font-bold text-emerald-400 uppercase tracking-wider mb-1">Mana Regen / Rnd</label>
+                            <input type="number" id="create-regen" value="1" min="0" class="w-full bg-gray-900 border border-emerald-900/60 rounded-xl px-3 py-2 text-white focus:outline-none focus:border-emerald-400 text-center text-base font-mono font-bold">
+                        </div>
+                        <div>
+                            <label class="block text-[10px] font-serif font-bold text-amber-300 uppercase tracking-wider mb-1">Stamina Regen / Rnd</label>
+                            <input type="number" id="create-stamina-regen" value="2" min="0" class="w-full bg-gray-900 border border-amber-900/60 rounded-xl px-3 py-2 text-white focus:outline-none focus:border-amber-400 text-center text-base font-mono font-bold">
+                        </div>
                     </div>
                 </div>
 
                 <!-- Core Stats -->
-                <div class="bg-gray-800 p-5 rounded-2xl border border-gray-700">
-                    <label class="block text-sm text-gray-400 mb-3">Core Stats</label>
+                <div class="bg-slate-900/90 p-5 rounded-3xl border border-amber-600/40 shadow-xl backdrop-blur-md">
+                    <label class="block text-xs font-serif font-bold text-amber-300 uppercase tracking-wider mb-3">Core Ability Scores</label>
                     <div class="grid grid-cols-3 gap-3">
-                        <div><label class="text-xs text-gray-500">STR</label><input type="number" id="create-str" value="10" class="w-full bg-gray-900 border border-gray-600 rounded px-2 py-1 text-white text-center"></div>
-                        <div><label class="text-xs text-gray-500">DEX</label><input type="number" id="create-dex" value="10" class="w-full bg-gray-900 border border-gray-600 rounded px-2 py-1 text-white text-center"></div>
-                        <div><label class="text-xs text-gray-500">CON</label><input type="number" id="create-con" value="10" class="w-full bg-gray-900 border border-gray-600 rounded px-2 py-1 text-white text-center"></div>
-                        <div><label class="text-xs text-gray-500">INT</label><input type="number" id="create-int" value="10" class="w-full bg-gray-900 border border-gray-600 rounded px-2 py-1 text-white text-center"></div>
-                        <div><label class="text-xs text-gray-500">WIS</label><input type="number" id="create-wis" value="10" class="w-full bg-gray-900 border border-gray-600 rounded px-2 py-1 text-white text-center"></div>
-                        <div><label class="text-xs text-gray-500">CHA</label><input type="number" id="create-cha" value="10" class="w-full bg-gray-900 border border-gray-600 rounded px-2 py-1 text-white text-center"></div>
+                        <div><label class="text-[10px] text-amber-300/70 font-serif font-bold">STR</label><input type="number" id="create-str" value="10" class="w-full bg-gray-900 border border-gray-600 rounded-lg px-2 py-1.5 text-white font-mono text-center"></div>
+                        <div><label class="text-[10px] text-amber-300/70 font-serif font-bold">DEX</label><input type="number" id="create-dex" value="10" class="w-full bg-gray-900 border border-gray-600 rounded-lg px-2 py-1.5 text-white font-mono text-center"></div>
+                        <div><label class="text-[10px] text-amber-300/70 font-serif font-bold">CON</label><input type="number" id="create-con" value="10" class="w-full bg-gray-900 border border-gray-600 rounded-lg px-2 py-1.5 text-white font-mono text-center"></div>
+                        <div><label class="text-[10px] text-amber-300/70 font-serif font-bold">INT</label><input type="number" id="create-int" value="10" class="w-full bg-gray-900 border border-gray-600 rounded-lg px-2 py-1.5 text-white font-mono text-center"></div>
+                        <div><label class="text-[10px] text-amber-300/70 font-serif font-bold">WIS</label><input type="number" id="create-wis" value="10" class="w-full bg-gray-900 border border-gray-600 rounded-lg px-2 py-1.5 text-white font-mono text-center"></div>
+                        <div><label class="text-[10px] text-amber-300/70 font-serif font-bold">CHA</label><input type="number" id="create-cha" value="10" class="w-full bg-gray-900 border border-gray-600 rounded-lg px-2 py-1.5 text-white font-mono text-center"></div>
                     </div>
                 </div>
 
                 <!-- Theme -->
-                <div class="bg-gray-800 p-5 rounded-2xl border border-gray-700 flex justify-around items-center">
+                <div class="bg-slate-900/90 p-5 rounded-3xl border border-amber-600/40 flex justify-around items-center shadow-xl backdrop-blur-md">
                     <div class="text-center">
-                        <label class="block text-sm text-gray-400 mb-2">Primary Color</label>
-                        <input type="color" id="create-color1" value="#3b82f6" class="w-12 h-12 bg-gray-900 border border-gray-600 rounded-lg cursor-pointer p-1">
+                        <label class="block text-xs font-serif font-bold text-amber-300 uppercase tracking-wider mb-2">Primary Aura</label>
+                        <input type="color" id="create-color1" value="#3b82f6" class="w-12 h-12 bg-gray-900 border border-amber-700/60 rounded-xl cursor-pointer p-1">
                     </div>
                     <div class="text-center">
-                        <label class="block text-sm text-gray-400 mb-2">Secondary Color</label>
-                        <input type="color" id="create-color2" value="#1e3a8a" class="w-12 h-12 bg-gray-900 border border-gray-600 rounded-lg cursor-pointer p-1">
+                        <label class="block text-xs font-serif font-bold text-amber-300 uppercase tracking-wider mb-2">Secondary Aura</label>
+                        <input type="color" id="create-color2" value="#1e3a8a" class="w-12 h-12 bg-gray-900 border border-amber-700/60 rounded-xl cursor-pointer p-1">
                     </div>
                 </div>
 
                 <div class="flex gap-4 pt-4">
-                    <button type="button" onclick="cancelCreate()" class="flex-1 py-4 bg-gray-700 hover:bg-gray-600 text-white rounded-xl transition font-medium">Cancel</button>
-                    <button type="submit" class="flex-[2] py-4 bg-purple-600 hover:bg-purple-500 text-white rounded-xl transition font-bold shadow-lg shadow-purple-900/50">Save Character</button>
+                    <button type="button" onclick="cancelCreate()" class="flex-1 py-4 bg-slate-800 hover:bg-slate-700 text-amber-200/80 rounded-xl font-serif font-bold transition">Cancel</button>
+                    <button type="submit" id="btn-create-submit" class="flex-[2] py-4 bg-gradient-to-r from-amber-700 to-amber-600 hover:from-amber-600 hover:to-amber-500 text-white rounded-xl font-serif font-bold shadow-lg shadow-amber-950/50 transition">Save Student</button>
                 </div>
             </form>
         </div>
@@ -1188,18 +2563,26 @@
         <div id="screen-tracker" class="w-full hidden flex-col min-h-screen pb-40 transition-colors duration-500">
             
             <!-- Header (Themed) -->
-            <div id="tracker-header" class="px-6 py-8 rounded-b-[2.5rem] shadow-xl flex justify-between items-start transition-colors duration-500 relative z-20">
-                <div class="flex gap-4 items-center">
-                    <img id="portrait-img" src="" class="w-16 h-16 rounded-full object-cover border-4 border-white/20 shadow-lg hidden">
+            <div id="tracker-header" class="px-6 py-6 rounded-b-[2.5rem] shadow-xl flex justify-between items-center transition-colors duration-500 relative z-20 border-b border-amber-500/30">
+                <div class="flex gap-3 items-center">
+                    <button onclick="exitTracker()" title="Back to Roster" class="text-white/80 hover:text-white bg-black/40 hover:bg-black/60 p-2.5 rounded-2xl backdrop-blur-md transition flex items-center justify-center shrink-0 border border-white/20">
+                        <span class="material-icons text-xl">arrow_back</span>
+                    </button>
+                    <img id="portrait-img" src="" class="w-14 h-14 rounded-full object-cover border-2 border-amber-400/50 shadow-lg hidden shrink-0">
                     <div>
-                        <h1 id="char-name" class="text-3xl font-black text-white drop-shadow-md leading-none">Name</h1>
-                        <p id="char-subtext" class="text-white/80 font-medium mt-1">Lvl 1 Student</p>
-                        <p id="char-school" class="text-white/60 text-xs font-bold uppercase tracking-wider mt-1">School</p>
+                        <h1 id="char-name" class="text-2xl font-serif font-black text-white drop-shadow-md leading-none">Name</h1>
+                        <p id="char-subtext" class="text-amber-100/90 text-xs font-serif mt-1">Lvl 1 Student</p>
+                        <p id="char-school" class="text-amber-300/70 text-[10px] font-serif font-bold uppercase tracking-wider">School</p>
                     </div>
                 </div>
-                <button onclick="exitTracker()" class="text-white/70 hover:text-white bg-black/20 p-2 rounded-full backdrop-blur-sm transition">
-                    <span class="material-icons">logout</span>
-                </button>
+                <div class="flex items-center gap-2">
+                    <button onclick="openDiceSimulator()" title="Dice Simulator" class="text-amber-300 hover:text-white bg-black/40 hover:bg-black/60 p-2 rounded-2xl backdrop-blur-md transition flex items-center justify-center border border-white/20 shadow-md">
+                        <span class="material-icons text-xl">casino</span>
+                    </button>
+                    <button onclick="showEditCharacterFromTracker()" title="Edit Character" class="text-amber-200 hover:text-white bg-black/40 hover:bg-black/60 px-3 py-2 rounded-2xl backdrop-blur-md transition flex items-center gap-1 text-xs font-serif font-bold shadow-md border border-white/20">
+                        <span class="material-icons text-base">edit</span> Edit
+                    </button>
+                </div>
             </div>
 
             <!-- Main Content Area -->
@@ -1208,107 +2591,159 @@
                 <!-- Core Setup Row -->
                 <div class="flex gap-2">
                     <!-- AC Box -->
-                    <div class="bg-gray-800 p-4 rounded-3xl border border-gray-700 shadow-lg flex flex-col items-center justify-center shrink-0 w-24">
-                        <span class="material-icons text-gray-500 text-sm mb-1">shield</span>
-                        <span id="stat-ac" class="text-3xl font-black text-white">10</span>
-                        <span class="text-xs text-gray-400 font-medium">AC</span>
+                    <div class="bg-slate-900/90 p-4 rounded-3xl border border-amber-600/40 shadow-xl flex flex-col items-center justify-center shrink-0 w-24 backdrop-blur-md">
+                        <span class="material-icons text-amber-400 text-sm mb-1">shield</span>
+                        <span id="stat-ac" class="text-3xl font-mono font-black text-amber-300">10</span>
+                        <span class="text-[10px] text-amber-200/70 font-serif font-bold uppercase">AC</span>
                     </div>
 
                     <!-- Round/Rest Controls -->
-                    <div class="bg-gray-800 p-2 rounded-3xl border border-gray-700 shadow-lg flex-grow grid grid-cols-3 gap-2 relative">
-                        <button id="btn-next-round" onclick="triggerNextRound()" class="flex flex-col items-center justify-center bg-gray-700/50 hover:bg-gray-600 rounded-2xl transition group p-2 relative">
-                            <span class="material-icons text-green-400 group-hover:scale-110 transition-transform">refresh</span>
-                            <span class="text-[10px] text-gray-400 font-semibold mt-1">Round</span>
+                    <div class="bg-slate-900/90 p-2 rounded-3xl border border-amber-600/40 shadow-xl flex-grow grid grid-cols-3 gap-2 relative backdrop-blur-md">
+                        <button id="btn-next-round" onclick="triggerNextRound()" class="flex flex-col items-center justify-center bg-slate-800/60 hover:bg-slate-700/80 rounded-2xl transition group p-2 relative border border-amber-900/40">
+                            <span class="material-icons text-emerald-400 group-hover:scale-110 transition-transform">refresh</span>
+                            <span class="text-[10px] text-amber-200/80 font-serif font-bold mt-1">Round</span>
                             <span class="absolute top-1 right-1 flex h-2 w-2">
-                                <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75"></span>
-                                <span class="relative inline-flex rounded-full h-2 w-2 bg-green-500"></span>
+                                <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                                <span class="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
                             </span>
                         </button>
-                        <button id="btn-short-rest" onclick="promptShortRest()" class="flex flex-col items-center justify-center bg-gray-700/50 hover:bg-gray-600 rounded-2xl transition group p-2 relative">
-                            <span class="material-icons text-yellow-400 group-hover:scale-110 transition-transform">local_cafe</span>
-                            <span class="text-[10px] text-gray-400 font-semibold mt-1">Short</span>
-                            <span id="rest-counter" class="absolute -top-2 -right-2 bg-gray-900 border-2 border-[var(--char-c1)] text-white text-[10px] font-bold px-1.5 py-0.5 rounded-full">2/2</span>
+                        <button id="btn-short-rest" onclick="promptShortRest()" class="flex flex-col items-center justify-center bg-slate-800/60 hover:bg-slate-700/80 rounded-2xl transition group p-2 relative border border-amber-900/40">
+                            <span class="material-icons text-amber-400 group-hover:scale-110 transition-transform">local_cafe</span>
+                            <span class="text-[10px] text-amber-200/80 font-serif font-bold mt-1">Short</span>
+                            <span id="rest-counter" class="absolute -top-2 -right-2 bg-gray-900 border-2 border-amber-400 text-amber-300 text-[10px] font-mono font-bold px-1.5 py-0.5 rounded-full">2/2</span>
                         </button>
-                        <button id="btn-long-rest" onclick="promptLongRest()" class="flex flex-col items-center justify-center bg-gray-700/50 hover:bg-gray-600 rounded-2xl transition group p-2">
-                            <span class="material-icons text-blue-400 group-hover:scale-110 transition-transform">bed</span>
-                            <span class="text-[10px] text-gray-400 font-semibold mt-1">Long</span>
+                        <button id="btn-long-rest" onclick="promptLongRest()" class="flex flex-col items-center justify-center bg-slate-800/60 hover:bg-slate-700/80 rounded-2xl transition group p-2 border border-amber-900/40">
+                            <span class="material-icons text-sky-400 group-hover:scale-110 transition-transform">bed</span>
+                            <span class="text-[10px] text-amber-200/80 font-serif font-bold mt-1">Long</span>
                         </button>
                     </div>
                 </div>
 
-                <!-- Stats Grid (Compact) -->
-                <div class="bg-gray-800/80 p-3 rounded-2xl border border-gray-700 flex justify-between px-4 shadow-inner">
-                    <div class="text-center"><span class="block text-[9px] text-gray-500 font-bold">STR</span><span id="stat-str" class="text-white font-medium">10</span></div>
-                    <div class="text-center"><span class="block text-[9px] text-gray-500 font-bold">DEX</span><span id="stat-dex" class="text-white font-medium">10</span></div>
-                    <div class="text-center"><span class="block text-[9px] text-gray-500 font-bold">CON</span><span id="stat-con" class="text-white font-medium">10</span></div>
-                    <div class="text-center"><span class="block text-[9px] text-gray-500 font-bold">INT</span><span id="stat-int" class="text-white font-medium">10</span></div>
-                    <div class="text-center"><span class="block text-[9px] text-gray-500 font-bold">WIS</span><span id="stat-wis" class="text-white font-medium">10</span></div>
-                    <div class="text-center"><span class="block text-[9px] text-gray-500 font-bold">CHA</span><span id="stat-cha" class="text-white font-medium">10</span></div>
+                <!-- Stats Grid (Compact Parchment Scroll) -->
+                <div class="bg-slate-900/90 p-3 rounded-2xl border border-amber-600/40 flex justify-between px-4 shadow-inner backdrop-blur-md">
+                    <div class="text-center"><span class="block text-[9px] text-amber-300/70 font-serif font-bold">STR</span><span id="stat-str" class="text-white font-mono font-bold">10</span></div>
+                    <div class="text-center"><span class="block text-[9px] text-amber-300/70 font-serif font-bold">DEX</span><span id="stat-dex" class="text-white font-mono font-bold">10</span></div>
+                    <div class="text-center"><span class="block text-[9px] text-amber-300/70 font-serif font-bold">CON</span><span id="stat-con" class="text-white font-mono font-bold">10</span></div>
+                    <div class="text-center"><span class="block text-[9px] text-amber-300/70 font-serif font-bold">INT</span><span id="stat-int" class="text-white font-mono font-bold">10</span></div>
+                    <div class="text-center"><span class="block text-[9px] text-amber-300/70 font-serif font-bold">WIS</span><span id="stat-wis" class="text-white font-mono font-bold">10</span></div>
+                    <div class="text-center"><span class="block text-[9px] text-amber-300/70 font-serif font-bold">CHA</span><span id="stat-cha" class="text-white font-mono font-bold">10</span></div>
                 </div>
 
                 <!-- Vitals Panel -->
-                <div class="bg-gray-800 p-5 rounded-3xl border border-[var(--char-c2)] shadow-2xl space-y-6">
+                <div class="bg-slate-900/90 p-5 rounded-3xl border border-amber-600/40 shadow-2xl space-y-4 backdrop-blur-md">
                     
                     <!-- Health -->
                     <div>
-                        <div class="flex justify-between items-end mb-2">
-                            <h2 class="text-red-400 font-black tracking-widest text-sm uppercase flex items-center gap-1">
-                                <span class="material-icons text-sm">favorite</span> Health
+                        <div class="flex justify-between items-end mb-1">
+                            <h2 class="text-rose-400 font-serif font-bold tracking-wider text-xs uppercase flex items-center gap-1">
+                                <span class="material-icons text-sm">favorite</span> Health Pool
                             </h2>
                         </div>
                         <div class="flex items-center gap-3">
-                            <button onclick="queueVital('hp', -1)" class="w-14 h-14 shrink-0 bg-red-900/30 hover:bg-red-900/50 text-red-500 rounded-2xl flex items-center justify-center text-3xl font-black transition active:scale-95">-</button>
+                            <button onclick="queueVital('hp', -1)" class="w-12 h-12 shrink-0 bg-rose-950/40 hover:bg-rose-900/60 text-rose-400 border border-rose-800/40 rounded-2xl flex items-center justify-center text-2xl font-black transition active:scale-95">-</button>
                             <div class="bar-container flex-grow">
                                 <div id="hp-ghost" class="bar-ghost bg-red-500 w-0"></div>
-                                <div id="hp-fill" class="bar-fill bg-red-600"></div>
-                                <div id="hp-text" class="bar-text text-white">10 / 10</div>
+                                <div id="hp-fill" class="bar-fill bg-gradient-to-r from-red-700 to-rose-500"></div>
+                                <div id="hp-text" class="bar-text text-white font-mono">10 / 10</div>
                             </div>
-                            <button onclick="queueVital('hp', 1)" class="w-14 h-14 shrink-0 bg-green-900/30 hover:bg-green-900/50 text-green-500 rounded-2xl flex items-center justify-center text-3xl font-black transition active:scale-95">+</button>
+                            <button onclick="queueVital('hp', 1)" class="w-12 h-12 shrink-0 bg-emerald-950/40 hover:bg-emerald-900/60 text-emerald-400 border border-emerald-800/40 rounded-2xl flex items-center justify-center text-2xl font-black transition active:scale-95">+</button>
                         </div>
                     </div>
 
                     <!-- Mana -->
                     <div>
-                        <div class="flex justify-between items-end mb-2">
-                            <h2 class="text-blue-400 font-black tracking-widest text-sm uppercase flex items-center gap-1">
-                                <span class="material-icons text-sm">water_drop</span> Mana
+                        <div class="flex justify-between items-end mb-1">
+                            <h2 class="text-sky-400 font-serif font-bold tracking-wider text-xs uppercase flex items-center gap-1">
+                                <span class="material-icons text-sm">water_drop</span> Mana Pool
                             </h2>
                         </div>
                         <div class="flex items-center gap-3">
-                            <button onclick="queueVital('mana', -1)" class="w-14 h-14 shrink-0 bg-red-900/30 hover:bg-red-900/50 text-red-500 rounded-2xl flex items-center justify-center text-3xl font-black transition active:scale-95">-</button>
+                            <button onclick="queueVital('mana', -1)" class="w-12 h-12 shrink-0 bg-rose-950/40 hover:bg-rose-900/60 text-rose-400 border border-rose-800/40 rounded-2xl flex items-center justify-center text-2xl font-black transition active:scale-95">-</button>
                             <div class="bar-container flex-grow">
                                 <div id="mana-ghost" class="bar-ghost bg-blue-400 w-0"></div>
-                                <div id="mana-fill" class="bar-fill bg-[var(--char-c1)]"></div>
-                                <div id="mana-text" class="bar-text text-white">5 / 5</div>
+                                <div id="mana-fill" class="bar-fill bg-gradient-to-r from-blue-700 to-sky-400"></div>
+                                <div id="mana-text" class="bar-text text-white font-mono">5 / 5</div>
                             </div>
-                            <button onclick="queueVital('mana', 1)" class="w-14 h-14 shrink-0 bg-blue-900/30 hover:bg-blue-900/50 text-blue-400 rounded-2xl flex items-center justify-center text-3xl font-black transition active:scale-95">+</button>
+                            <button onclick="queueVital('mana', 1)" class="w-12 h-12 shrink-0 bg-sky-950/40 hover:bg-sky-900/60 text-sky-400 border border-sky-800/40 rounded-2xl flex items-center justify-center text-2xl font-black transition active:scale-95">+</button>
                         </div>
                     </div>
+
+                    <!-- Stamina (Smaller separate bar) -->
+                    <div>
+                        <div class="flex justify-between items-end mb-1">
+                            <h2 class="text-amber-400 font-serif font-bold tracking-wider text-xs uppercase flex items-center gap-1">
+                                <span class="material-icons text-sm">bolt</span> Stamina Pool
+                            </h2>
+                        </div>
+                        <div class="flex items-center gap-3">
+                            <button onclick="queueVital('stamina', -1)" class="w-10 h-10 shrink-0 bg-rose-950/40 hover:bg-rose-900/60 text-rose-400 border border-rose-800/40 rounded-xl flex items-center justify-center text-xl font-black transition active:scale-95">-</button>
+                            <div class="bar-container !h-8 flex-grow">
+                                <div id="stamina-ghost" class="bar-ghost bg-amber-400 w-0"></div>
+                                <div id="stamina-fill" class="bar-fill bg-gradient-to-r from-amber-600 via-amber-500 to-yellow-400"></div>
+                                <div id="stamina-text" class="bar-text text-white font-mono text-xs">10 / 10</div>
+                            </div>
+                            <button onclick="queueVital('stamina', 1)" class="w-10 h-10 shrink-0 bg-amber-950/40 hover:bg-amber-900/60 text-amber-400 border border-amber-800/40 rounded-xl flex items-center justify-center text-xl font-black transition active:scale-95">+</button>
+                        </div>
+                    </div>
+
                 </div>
 
                 <!-- Currency & Notes -->
-                <div class="bg-gray-800 p-4 rounded-3xl border border-gray-700 shadow-lg space-y-3">
+                <div class="bg-slate-900/90 p-4 rounded-3xl border border-amber-600/40 shadow-xl space-y-3 backdrop-blur-md">
                     <div class="flex gap-2 justify-between">
-                        <div class="flex items-center bg-gray-900 rounded-lg px-2 py-1 flex-1 border border-yellow-700/50">
-                            <span class="text-yellow-500 font-bold text-xs mr-2">GP</span>
+                        <div class="flex items-center bg-gray-900 rounded-xl px-2 py-1 flex-1 border border-amber-700/50">
+                            <span class="text-amber-400 font-serif font-bold text-xs mr-2">GP</span>
                             <input type="number" id="curr-gp" oninput="syncCurrency()" class="w-full bg-transparent text-white font-mono text-right focus:outline-none">
                         </div>
-                        <div class="flex items-center bg-gray-900 rounded-lg px-2 py-1 flex-1 border border-gray-400/50">
-                            <span class="text-gray-400 font-bold text-xs mr-2">SP</span>
+                        <div class="flex items-center bg-gray-900 rounded-xl px-2 py-1 flex-1 border border-slate-500/50">
+                            <span class="text-slate-300 font-serif font-bold text-xs mr-2">SP</span>
                             <input type="number" id="curr-sp" oninput="syncCurrency()" class="w-full bg-transparent text-white font-mono text-right focus:outline-none">
                         </div>
-                        <div class="flex items-center bg-gray-900 rounded-lg px-2 py-1 flex-1 border border-orange-800/50">
-                            <span class="text-orange-500 font-bold text-xs mr-2">CP</span>
+                        <div class="flex items-center bg-gray-900 rounded-xl px-2 py-1 flex-1 border border-amber-800/50">
+                            <span class="text-amber-600 font-serif font-bold text-xs mr-2">CP</span>
                             <input type="number" id="curr-cp" oninput="syncCurrency()" class="w-full bg-transparent text-white font-mono text-right focus:outline-none">
                         </div>
                     </div>
-                    <textarea id="char-notes" oninput="syncNotes()" rows="2" class="w-full bg-gray-900 border border-gray-600 rounded-xl p-3 text-sm text-gray-300 focus:outline-none focus:border-[var(--char-c1)] resize-none" placeholder="Session notes, loot, etc..."></textarea>
+                    <textarea id="char-notes" oninput="syncNotes()" rows="2" class="w-full bg-gray-900 border border-amber-900/60 rounded-2xl p-3 text-xs text-amber-100/90 font-serif focus:outline-none focus:border-amber-400 resize-none" placeholder="Session chronicle, loot, quest logs..."></textarea>
+                </div>
+
+                <!-- Inventory Vault Section -->
+                <div class="mt-8">
+                    <div class="flex justify-between items-center mb-3">
+                        <div>
+                            <h2 class="text-xl font-serif font-extrabold text-amber-300 flex items-center gap-2">
+                                <span class="material-icons text-amber-400">inventory_2</span> Inventory Vault
+                            </h2>
+                            <p class="text-[11px] text-amber-200/60 font-serif">Custom Lists, Shared Catalog & Rarity Equipment</p>
+                        </div>
+                        <div class="flex items-center gap-2">
+                            <span id="inventory-total-weight" class="bg-amber-950/80 text-amber-300 border border-amber-600/40 px-2.5 py-1 rounded-xl text-xs font-mono font-bold shadow-md">0.0 lbs</span>
+                            <button onclick="openCreateItemModal()" class="bg-gradient-to-r from-amber-700 to-amber-600 hover:from-amber-600 hover:to-amber-500 text-white px-3 py-1.5 rounded-xl text-xs font-serif font-bold shadow-md flex items-center gap-1 transition active:scale-95 border border-amber-400/30">
+                                <span class="material-icons text-sm">add</span> Item
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- Search & Filter Bar -->
+                    <div class="mb-3">
+                        <input type="text" id="inventory-search-input" oninput="renderInventory()" placeholder="🔍 Search inventory items by name or description..." class="w-full bg-gray-900/90 border border-amber-900/60 rounded-xl px-4 py-2.5 text-xs text-white placeholder-amber-200/40 focus:outline-none focus:border-amber-400 font-serif">
+                    </div>
+
+                    <!-- Category Filter Bar -->
+                    <div id="inventory-categories-list" class="flex gap-2 overflow-x-auto pb-3 hide-scrollbar mb-3">
+                        <!-- Categories injected here -->
+                    </div>
+
+                    <!-- Items List Grid -->
+                    <div id="inventory-items-list" class="space-y-3">
+                        <!-- Items injected here -->
+                    </div>
                 </div>
 
                 <!-- Attacks List -->
                 <div class="mt-8 pb-10">
                     <div class="flex justify-between items-center mb-4">
-                        <h2 class="text-xl font-extrabold text-white">Abilities</h2>
+                        <h2 class="text-xl font-serif font-extrabold text-amber-300 flex items-center gap-2"><span class="material-icons text-amber-400">auto_stories</span> Grimoire Abilities</h2>
                     </div>
                     <div id="attack-list" class="space-y-3">
                         <!-- Attacks injected here -->
@@ -1317,22 +2752,22 @@
 
             </div>
 
-            <!-- Floating Add Button -->
-            <button onclick="showCreateAttack()" class="fixed bottom-6 right-6 w-16 h-16 bg-[var(--char-c1)] text-white rounded-full flex items-center justify-center shadow-xl shadow-[var(--char-c1)]/40 hover:scale-105 transition-transform z-40">
+            <!-- Floating Scribe Button -->
+            <button onclick="showCreateAttack()" class="fixed bottom-6 right-6 w-16 h-16 bg-gradient-to-br from-amber-600 to-amber-700 border-2 border-amber-400 text-white rounded-full flex items-center justify-center shadow-[0_0_20px_rgba(212,175,55,0.5)] hover:scale-105 transition-transform z-40">
                 <span class="material-icons text-3xl">add</span>
             </button>
 
             <!-- Turn Queue Preview Panel (Bottom Bar) -->
-            <div id="turn-preview-panel" class="fixed bottom-0 left-0 w-full bg-gray-900 border-t border-[var(--char-c1)] p-4 shadow-[0_-10px_40px_rgba(0,0,0,0.5)] transform translate-y-full transition-transform duration-300 z-50 flex items-center justify-between">
+            <div id="turn-preview-panel" class="fixed bottom-0 left-0 w-full bg-slate-950 border-t-2 border-amber-500/60 p-4 shadow-[0_-10px_40px_rgba(0,0,0,0.8)] transform translate-y-full transition-transform duration-300 z-50 flex items-center justify-between backdrop-blur-lg">
                 <div>
-                    <span class="text-xs text-[var(--char-c1)] font-bold uppercase tracking-wider block mb-1">Pending Actions</span>
-                    <span id="turn-preview-text" class="text-white font-mono font-medium"></span>
+                    <span class="text-[10px] text-amber-400 font-serif font-bold uppercase tracking-wider block mb-0.5">Pending Action Queue</span>
+                    <span id="turn-preview-text" class="text-amber-100 font-mono text-sm font-medium"></span>
                 </div>
                 <div class="flex gap-2">
-                    <button onclick="cancelTurn()" class="p-3 bg-gray-800 text-gray-400 hover:text-white rounded-xl transition">
+                    <button onclick="cancelTurn()" class="p-3 bg-slate-900 text-gray-400 hover:text-white rounded-xl transition border border-gray-700">
                         <span class="material-icons">close</span>
                     </button>
-                    <button onclick="lockInTurn()" class="px-6 py-3 bg-[var(--char-c1)] text-white font-bold rounded-xl shadow-lg transition active:scale-95 flex items-center gap-2">
+                    <button onclick="lockInTurn()" class="px-5 py-3 bg-gradient-to-r from-amber-700 to-amber-600 hover:from-amber-600 hover:to-amber-500 text-white font-serif font-bold rounded-xl shadow-lg transition active:scale-95 flex items-center gap-1.5 text-sm">
                         Lock In <span class="material-icons text-sm">check</span>
                     </button>
                 </div>
@@ -1343,71 +2778,91 @@
         <!-- ========================================= -->
         <!-- SCREEN 5: CREATE ATTACK                   -->
         <!-- ========================================= -->
-        <div id="screen-create-attack" class="w-full hidden p-6 overflow-y-auto bg-gray-900 absolute inset-0 z-50">
-            <h2 class="text-2xl font-bold mb-6 flex items-center gap-2 text-white">
-                <span class="material-icons text-[var(--char-c1)]">draw</span> Scribe Ability
+        <div id="screen-create-attack" class="w-full hidden p-6 overflow-y-auto bg-slate-950 absolute inset-0 z-50">
+            <h2 class="text-2xl font-serif font-bold mb-6 flex items-center gap-2 text-amber-300">
+                <span class="material-icons text-amber-400">auto_stories</span> Scribe Ability
             </h2>
             
-            <form id="form-attack" onsubmit="submitAttack(event)" class="bg-gray-800 p-6 rounded-2xl border border-[var(--char-c2)] space-y-5 shadow-xl">
+            <form id="form-attack" onsubmit="submitAttack(event)" class="bg-slate-900/90 p-6 rounded-3xl border border-amber-600/40 space-y-6 shadow-2xl backdrop-blur-md">
                 
                 <div>
-                    <label class="block text-sm text-gray-400 mb-1">Select Existing or Create New</label>
-                    <select id="attack-selector" onchange="handleAttackSelection(event)" class="w-full bg-gray-900 border border-gray-600 rounded-lg px-4 py-3 text-white focus:outline-none focus:border-[var(--char-c1)] font-sans">
+                    <label class="block text-xs font-serif font-bold text-amber-300 uppercase tracking-wider mb-2">Select Grimoire Spell or Create Custom</label>
+                    <select id="attack-selector" onchange="handleAttackSelection(event)" class="w-full bg-gray-900 border border-amber-900/60 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-amber-400 font-sans text-sm">
                         <!-- Populated dynamically -->
                     </select>
                 </div>
 
                 <!-- Preview for existing -->
-                <div id="spell-preview" class="hidden bg-gray-900 p-4 rounded-xl border border-gray-700">
+                <div id="spell-preview" class="hidden bg-gray-900/80 p-4 rounded-2xl border border-amber-600/40 shadow-inner">
                     <!-- Populated dynamically -->
                 </div>
 
-                <div id="spell-creation-fields" class="space-y-5 border-t border-gray-700 pt-5">
+                <div id="spell-creation-fields" class="space-y-5 border-t border-amber-900/40 pt-5">
                     <div>
-                        <label class="block text-sm text-gray-400 mb-1">Ability Name</label>
-                        <input type="text" id="attack-name" class="w-full bg-gray-900 border border-gray-600 rounded-lg px-4 py-3 text-white focus:outline-none focus:border-[var(--char-c1)]" placeholder="e.g., Fireball">
+                        <label class="block text-xs font-serif font-bold text-amber-300 uppercase tracking-wider mb-1">Ability Name</label>
+                        <input type="text" id="attack-name" class="w-full bg-gray-900 border border-amber-900/60 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-amber-400 font-serif" placeholder="e.g. Arcane Fireball">
                     </div>
 
-                    <div class="grid grid-cols-2 gap-4">
+                    <div class="grid grid-cols-3 gap-3">
                         <div>
-                            <label class="block text-sm text-gray-400 mb-1">Level</label>
-                            <input type="number" id="attack-level" min="0" value="1" class="w-full bg-gray-900 border border-gray-600 rounded-lg px-4 py-3 text-white focus:outline-none focus:border-[var(--char-c1)]">
+                            <label class="block text-[11px] font-serif font-bold text-amber-300 uppercase tracking-wider mb-1">Spell Level</label>
+                            <input type="number" id="attack-level" min="0" value="1" class="w-full bg-gray-900 border border-amber-900/60 rounded-xl px-2 py-3 text-white focus:outline-none focus:border-amber-400 font-mono text-center">
                         </div>
                         <div>
-                            <label class="block text-sm text-gray-400 mb-1">Mana Cost</label>
-                            <input type="number" id="attack-cost" min="0" value="1" class="w-full bg-gray-900 border border-gray-600 rounded-lg px-4 py-3 text-white focus:outline-none focus:border-[var(--char-c1)]">
+                            <label class="block text-[11px] font-serif font-bold text-sky-400 uppercase tracking-wider mb-1">Mana Cost</label>
+                            <input type="number" id="attack-cost" min="0" value="1" class="w-full bg-gray-900 border border-sky-900/60 rounded-xl px-2 py-3 text-sky-400 font-mono text-center font-bold">
+                        </div>
+                        <div>
+                            <label class="block text-[11px] font-serif font-bold text-amber-400 uppercase tracking-wider mb-1">Stamina Cost</label>
+                            <input type="number" id="attack-stamina-cost" min="0" value="0" class="w-full bg-gray-900 border border-amber-900/60 rounded-xl px-2 py-3 text-amber-400 font-mono text-center font-bold">
                         </div>
                     </div>
 
-                    <div class="grid grid-cols-3 gap-4 border-t border-gray-700 pt-4">
-                        <div class="col-span-1">
-                            <label class="block text-sm text-gray-400 mb-1">Dice Qty</label>
-                            <input type="number" id="attack-dice-amount" min="1" value="1" class="w-full bg-gray-900 border border-gray-600 rounded-lg px-4 py-3 text-white focus:outline-none focus:border-[var(--char-c1)] text-center">
+                    <!-- Multi-Dice Builder -->
+                    <div class="border-t border-amber-900/40 pt-4">
+                        <div class="flex justify-between items-center mb-3">
+                            <div>
+                                <label class="block text-xs font-serif font-bold text-amber-300 uppercase tracking-wider">Damage & Action Dice Sets</label>
+                                <p class="text-[10px] text-gray-400">Add multiple dice types per ability (e.g. 2d6 Fire + 1d4 Slashing)</p>
+                            </div>
+                            <button type="button" onclick="addDiceRow(1, 6, '')" class="text-xs bg-amber-950/60 hover:bg-amber-900/80 text-amber-300 border border-amber-600/40 px-3 py-1.5 rounded-xl transition font-serif font-bold flex items-center gap-1 shrink-0">
+                                <span class="material-icons text-sm">add</span> Add Dice
+                            </button>
                         </div>
-                        <div class="col-span-1">
-                            <label class="block text-sm text-gray-400 mb-1">Dice Type</label>
-                            <div class="relative">
-                                <span class="absolute left-3 top-3.5 text-gray-500 font-bold">d</span>
-                                <input type="number" id="attack-dice-type" min="2" step="2" value="8" class="w-full bg-gray-900 border border-gray-600 rounded-lg pl-8 pr-2 py-3 text-white focus:outline-none focus:border-[var(--char-c1)] text-center">
+                        <div id="dice-rows-container">
+                            <!-- Dynamic dice rows injected here -->
+                        </div>
+                    </div>
+
+                    <!-- Health Effect Builder -->
+                    <div class="border-t border-amber-900/40 pt-4 space-y-3">
+                        <label class="block text-xs font-serif font-bold text-amber-300 uppercase tracking-wider">Health Effect (Self / Target Caster)</label>
+                        <select id="attack-hp-effect" onchange="toggleHpEffectFields(event)" class="w-full bg-gray-900 border border-amber-900/60 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-amber-400 font-sans text-sm">
+                            <option value="none">None (No direct HP impact)</option>
+                            <option value="heal">Restores Health (+ HP to Caster)</option>
+                            <option value="damage">Drains / Harms Health (- HP to Caster)</option>
+                        </select>
+                        
+                        <div id="hp-dice-section" class="hidden space-y-3 bg-gray-900/80 p-3 rounded-2xl border border-gray-700/80">
+                            <div class="flex justify-between items-center">
+                                <span class="text-xs font-serif font-bold text-emerald-400">Health Dice Rolls (Optional)</span>
+                                <button type="button" onclick="addHpDiceRow(1, 4)" class="text-xs bg-emerald-950/60 hover:bg-emerald-900/80 text-emerald-300 border border-emerald-700/60 px-2.5 py-1 rounded-xl transition font-serif font-bold flex items-center gap-1">
+                                    <span class="material-icons text-xs">add</span> Add HP Die
+                                </button>
+                            </div>
+                            <div id="hp-dice-rows-container">
+                                <!-- Dynamic health dice rows injected here -->
                             </div>
                         </div>
-                        <div class="col-span-1">
-                            <label class="block text-sm text-gray-400 mb-1">Type</label>
-                            <input type="text" id="attack-damage-type" class="w-full bg-gray-900 border border-gray-600 rounded-lg px-2 py-3 text-white focus:outline-none focus:border-[var(--char-c1)] text-center text-sm" placeholder="Fire">
-                        </div>
                     </div>
 
-                    <div class="flex items-center gap-3 bg-gray-900 p-3 rounded-lg border border-gray-700">
-                        <input type="checkbox" id="attack-is-heal" class="w-5 h-5 accent-green-500 rounded bg-gray-800 border-gray-600">
-                        <label for="attack-is-heal" class="text-sm text-gray-300 font-medium">This ability restores Health</label>
-                    </div>
-
-                    <div class="border-t border-gray-700 pt-4">
-                        <div class="flex justify-between items-center mb-2">
-                            <label class="block text-sm text-gray-400">Select Icon</label>
+                    <!-- Icon & Color Selector -->
+                    <div class="border-t border-amber-900/40 pt-4">
+                        <div class="flex justify-between items-center mb-3">
+                            <label class="block text-xs font-serif font-bold text-amber-300 uppercase tracking-wider">Ability Sigil Icon</label>
                             <div class="flex items-center gap-2">
-                                <label class="text-sm text-gray-400">Color</label>
-                                <input type="color" id="attack-color" value="#EF4444" class="w-8 h-8 bg-gray-900 border border-gray-600 rounded cursor-pointer p-0.5">
+                                <label class="text-xs font-serif text-amber-300">Sigil Color</label>
+                                <input type="color" id="attack-color" value="#EF4444" class="w-8 h-8 bg-gray-900 border border-amber-700/60 rounded-lg cursor-pointer p-0.5">
                             </div>
                         </div>
                         <input type="hidden" id="attack-icon" value="">
@@ -1417,9 +2872,9 @@
                     </div>
                 </div>
 
-                <div class="flex gap-4 mt-8 pt-4">
-                    <button type="button" onclick="cancelCreateAttack()" class="flex-1 py-4 bg-gray-700 hover:bg-gray-600 text-white rounded-xl transition font-medium">Cancel</button>
-                    <button type="submit" class="flex-[2] py-4 bg-[var(--char-c1)] hover:opacity-80 text-white rounded-xl transition font-bold shadow-lg shadow-[var(--char-c1)]/50">Add Ability</button>
+                <div class="flex gap-4 mt-8 pt-4 border-t border-amber-900/40">
+                    <button type="button" onclick="cancelCreateAttack()" class="flex-1 py-4 bg-slate-800 hover:bg-slate-700 text-amber-200/80 rounded-xl transition font-serif font-bold">Cancel</button>
+                    <button type="submit" class="flex-[2] py-4 bg-gradient-to-r from-amber-700 to-amber-600 hover:from-amber-600 hover:to-amber-500 text-white rounded-xl transition font-serif font-bold shadow-lg shadow-amber-900/40 text-base tracking-wide">Scribe Ability</button>
                 </div>
             </form>
         </div>
@@ -1427,35 +2882,233 @@
         <!-- ========================================= -->
         <!-- SCREEN 6: EXECUTE ACTION / COMBAT ROLL    -->
         <!-- ========================================= -->
-        <div id="screen-execute-action" class="w-full hidden p-6 overflow-y-auto bg-black/90 backdrop-blur-md absolute inset-0 z-50 flex flex-col">
-            <h2 class="text-3xl font-black mb-2 text-white text-center mt-8">Resolve Turn</h2>
-            <p class="text-gray-400 text-center mb-8">Roll your dice for the queued abilities.</p>
+        <div id="screen-execute-action" class="w-full hidden p-6 overflow-y-auto bg-slate-950/95 backdrop-blur-lg absolute inset-0 z-50 flex flex-col">
+            <h2 class="text-3xl font-serif font-extrabold mb-1 text-amber-300 text-center mt-6">Resolve Arcane Turn</h2>
+            <p class="text-amber-200/60 text-center font-serif text-sm mb-4">Roll your dice for queued abilities and health effects.</p>
             
+            <div class="flex justify-center mb-6">
+                <button onclick="autoRollAllDice()" class="px-6 py-3 bg-gradient-to-r from-amber-700 via-amber-600 to-amber-700 hover:from-amber-600 hover:to-amber-500 text-white font-serif font-bold rounded-2xl shadow-xl border border-amber-400/40 flex items-center gap-2 text-sm active:scale-95 transition">
+                    <span class="material-icons text-xl text-amber-300">casino</span> Auto Roll All Dice
+                </button>
+            </div>
+
             <div id="execute-spells-container" class="space-y-4 flex-grow">
                 <!-- Spells injected here -->
             </div>
 
-            <div class="flex gap-4 mt-8 pb-8">
-                <button onclick="cancelExecute()" class="flex-1 py-4 bg-gray-800 hover:bg-gray-700 text-white rounded-xl transition font-medium border border-gray-600">Back</button>
-                <button onclick="commitExecute()" class="flex-[2] py-4 bg-[var(--char-c1)] hover:opacity-80 text-white rounded-xl transition font-bold shadow-xl shadow-[var(--char-c1)]/30 text-lg">Confirm Results</button>
+            <div class="flex gap-4 mt-8 pb-8 border-t border-amber-900/40 pt-4">
+                <button onclick="cancelExecute()" class="flex-1 py-4 bg-slate-800 hover:bg-slate-700 text-amber-200/80 rounded-xl transition font-serif font-bold border border-amber-900/40">Back</button>
+                <button onclick="commitExecute()" class="flex-[2] py-4 bg-gradient-to-r from-amber-700 to-amber-600 hover:from-amber-600 hover:to-amber-500 text-white rounded-xl transition font-serif font-bold shadow-xl shadow-amber-950/50 text-lg">Confirm Results</button>
             </div>
         </div>
 
         <!-- ========================================= -->
         <!-- MODALS                                    -->
         <!-- ========================================= -->
-        <div id="modal-confirm" class="w-full hidden p-6 flex items-center justify-center bg-black/70 backdrop-blur-sm absolute inset-0 z-[100]">
-            <div class="bg-gray-800 p-8 rounded-2xl border border-gray-700 shadow-2xl w-full max-w-sm text-center">
-                <div class="w-16 h-16 rounded-full bg-yellow-900/50 text-yellow-500 flex items-center justify-center mx-auto mb-4">
+        <!-- Confirm Modal -->
+        <div id="modal-confirm" class="w-full hidden p-6 flex items-center justify-center bg-slate-950/80 backdrop-blur-md fixed inset-0 z-[100]">
+            <div class="bg-slate-900/95 p-8 rounded-3xl border border-amber-600/50 shadow-2xl w-full max-w-sm text-center">
+                <div class="w-16 h-16 rounded-full bg-amber-950/80 text-amber-400 border border-amber-500/40 flex items-center justify-center mx-auto mb-4 shadow-lg">
                     <span class="material-icons text-3xl">warning</span>
                 </div>
-                <h2 id="confirm-title" class="text-2xl font-bold mb-2 text-white">Confirm Action</h2>
-                <p id="confirm-message" class="text-sm text-gray-400 mb-8">Are you sure you want to proceed?</p>
+                <h2 id="confirm-title" class="text-2xl font-serif font-bold mb-2 text-amber-300">Confirm Action</h2>
+                <p id="confirm-message" class="text-sm font-serif text-amber-200/70 mb-8">Are you sure you want to proceed?</p>
                 
                 <div class="flex gap-4 mt-8">
-                    <button onclick="hideConfirm()" class="flex-1 py-3 bg-gray-700 hover:bg-gray-600 text-white rounded-xl transition font-medium">Cancel</button>
-                    <button id="btn-confirm-action" onclick="executeConfirm()" class="flex-1 py-3 bg-blue-600 hover:bg-blue-500 text-white rounded-xl transition font-medium shadow-lg shadow-blue-900/50">Confirm</button>
+                    <button onclick="hideConfirm()" class="flex-1 py-3 bg-slate-800 hover:bg-slate-700 text-amber-200/80 rounded-xl transition font-serif font-bold">Cancel</button>
+                    <button id="btn-confirm-action" onclick="executeConfirm()" class="flex-1 py-3 bg-gradient-to-r from-amber-700 to-amber-600 hover:from-amber-600 hover:to-amber-500 text-white rounded-xl transition font-serif font-bold shadow-lg shadow-amber-950/50">Confirm</button>
                 </div>
+            </div>
+        </div>
+
+        <!-- Standalone Dice Simulator Modal -->
+        <div id="modal-dice-simulator" class="w-full hidden p-6 flex items-center justify-center bg-slate-950/85 backdrop-blur-md fixed inset-0 z-[100] overflow-y-auto">
+            <div class="bg-slate-900/95 p-6 rounded-3xl border border-amber-600/50 shadow-2xl w-full max-w-sm text-center relative my-auto">
+                <button onclick="closeDiceSimulator()" class="absolute top-4 right-4 text-amber-200/60 hover:text-rose-400 transition p-1">
+                    <span class="material-icons text-2xl">close</span>
+                </button>
+
+                <div class="flex items-center justify-center gap-2 mb-4">
+                    <span class="material-icons text-3xl text-amber-400">casino</span>
+                    <h2 class="text-2xl font-serif font-bold text-amber-300">Arcane Dice Roller</h2>
+                </div>
+
+                <!-- Die Type Chips -->
+                <div class="mb-4">
+                    <label class="block text-[10px] font-serif font-bold text-amber-300 uppercase tracking-wider mb-2">Die Type</label>
+                    <div id="sim-die-selector" class="grid grid-cols-4 gap-1.5">
+                        <button type="button" onclick="selectSimDie(4)" class="sim-die-btn py-2 bg-slate-800 text-amber-200/90 rounded-xl font-mono text-sm font-bold border border-amber-900/40 hover:border-amber-400">d4</button>
+                        <button type="button" onclick="selectSimDie(6)" class="sim-die-btn py-2 bg-amber-900/60 text-amber-300 rounded-xl font-mono text-sm font-bold border border-amber-500 shadow-md">d6</button>
+                        <button type="button" onclick="selectSimDie(8)" class="sim-die-btn py-2 bg-slate-800 text-amber-200/90 rounded-xl font-mono text-sm font-bold border border-amber-900/40 hover:border-amber-400">d8</button>
+                        <button type="button" onclick="selectSimDie(10)" class="sim-die-btn py-2 bg-slate-800 text-amber-200/90 rounded-xl font-mono text-sm font-bold border border-amber-900/40 hover:border-amber-400">d10</button>
+                        <button type="button" onclick="selectSimDie(12)" class="sim-die-btn py-2 bg-slate-800 text-amber-200/90 rounded-xl font-mono text-sm font-bold border border-amber-900/40 hover:border-amber-400">d12</button>
+                        <button type="button" onclick="selectSimDie(20)" class="sim-die-btn py-2 bg-slate-800 text-amber-200/90 rounded-xl font-mono text-sm font-bold border border-amber-900/40 hover:border-amber-400">d20</button>
+                        <button type="button" onclick="selectSimDie(100)" class="sim-die-btn col-span-2 py-2 bg-slate-800 text-amber-200/90 rounded-xl font-mono text-sm font-bold border border-amber-900/40 hover:border-amber-400">d100</button>
+                    </div>
+                </div>
+
+                <!-- Qty & Modifier -->
+                <div class="grid grid-cols-2 gap-3 mb-5">
+                    <div>
+                        <label class="block text-[10px] font-serif font-bold text-amber-300 uppercase tracking-wider mb-1">Quantity</label>
+                        <input type="number" id="sim-qty" min="1" max="20" value="1" class="w-full bg-gray-900 border border-amber-900/60 rounded-xl px-3 py-2 text-white font-mono text-center font-bold text-lg focus:outline-none focus:border-amber-400">
+                    </div>
+                    <div>
+                        <label class="block text-[10px] font-serif font-bold text-amber-300 uppercase tracking-wider mb-1">Modifier (+/-)</label>
+                        <input type="number" id="sim-mod" value="0" class="w-full bg-gray-900 border border-amber-900/60 rounded-xl px-3 py-2 text-white font-mono text-center font-bold text-lg focus:outline-none focus:border-amber-400">
+                    </div>
+                </div>
+
+                <!-- Roll Button -->
+                <button onclick="rollSimDice()" class="w-full py-3.5 bg-gradient-to-r from-amber-700 via-amber-600 to-amber-700 hover:from-amber-600 hover:to-amber-500 text-white font-serif font-bold rounded-xl shadow-xl border border-amber-400/40 flex items-center justify-center gap-2 text-base active:scale-95 transition mb-5">
+                    <span class="material-icons text-xl">casino</span> Cast Roll
+                </button>
+
+                <!-- Roll Display Result Box -->
+                <div id="sim-result-box" class="hidden bg-gray-900/90 p-4 rounded-2xl border border-amber-600/40 shadow-inner mb-4">
+                    <span class="block text-[10px] text-amber-300 font-serif uppercase tracking-wider mb-1">Roll Breakdown</span>
+                    <div id="sim-rolls-list" class="text-xs text-amber-200/80 font-mono mb-2"></div>
+                    <div class="text-xs font-serif text-amber-200/60 uppercase">Total Result</div>
+                    <div id="sim-total-display" class="text-4xl font-mono font-black text-amber-400 drop-shadow-[0_0_10px_rgba(212,175,55,0.6)]">0</div>
+                </div>
+
+                <!-- Roll History Log -->
+                <div class="border-t border-amber-900/40 pt-3">
+                    <span class="block text-[10px] text-amber-300/70 font-serif uppercase tracking-wider mb-2 text-left">Session Roll Log</span>
+                    <div id="sim-history-log" class="max-h-24 overflow-y-auto space-y-1 text-left text-xs font-mono text-amber-200/70 pr-1 hide-scrollbar">
+                        <div class="text-gray-500 text-center italic text-[11px] py-1">No rolls recorded yet.</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Category Creation Modal -->
+        <div id="modal-create-category" class="w-full hidden p-6 flex items-center justify-center bg-slate-950/85 backdrop-blur-md fixed inset-0 z-[100] overflow-y-auto">
+            <div class="bg-slate-900/95 p-6 rounded-3xl border border-amber-600/50 shadow-2xl w-full max-w-sm my-auto relative">
+                <button onclick="closeCreateCategoryModal()" class="absolute top-4 right-4 text-amber-200/60 hover:text-rose-400 transition p-1">
+                    <span class="material-icons text-2xl">close</span>
+                </button>
+
+                <h3 class="text-2xl font-serif font-bold text-amber-300 mb-4 flex items-center gap-2">
+                    <span class="material-icons text-amber-400">category</span> New Vault List
+                </h3>
+
+                <form onsubmit="submitCreateCategory(event)" class="space-y-4">
+                    <div>
+                        <label class="block text-xs font-serif font-bold text-amber-300 uppercase tracking-wider mb-1">List Name</label>
+                        <input type="text" id="cat-name-input" required class="w-full bg-gray-900 border border-amber-900/60 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-amber-400 font-serif" placeholder="e.g. Relics & Artifacts">
+                    </div>
+
+                    <div>
+                        <label class="block text-xs font-serif font-bold text-amber-300 uppercase tracking-wider mb-2">Category Icon</label>
+                        <input type="hidden" id="cat-icon-input" value="inventory_2">
+                        <div id="cat-icon-grid" class="grid grid-cols-5 gap-2 bg-gray-900/80 p-3 rounded-2xl border border-amber-900/40">
+                            <!-- Icon options dynamically rendered -->
+                        </div>
+                    </div>
+
+                    <div>
+                        <label class="block text-xs font-serif font-bold text-amber-300 uppercase tracking-wider mb-2">List Theme Color</label>
+                        <input type="color" id="cat-color-input" value="#8b5cf6" class="w-full h-12 bg-gray-900 border border-amber-900/60 rounded-xl cursor-pointer p-1">
+                    </div>
+
+                    <div class="flex gap-3 pt-3">
+                        <button type="button" onclick="closeCreateCategoryModal()" class="flex-1 py-3 bg-slate-800 hover:bg-slate-700 text-amber-200/80 rounded-xl font-serif font-bold">Cancel</button>
+                        <button type="submit" class="flex-1 py-3 bg-gradient-to-r from-amber-700 to-amber-600 text-white rounded-xl font-serif font-bold shadow-lg">Save List</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+
+        <!-- Add Item to Vault Modal -->
+        <div id="modal-create-item" class="w-full hidden p-6 flex items-center justify-center bg-slate-950/85 backdrop-blur-md fixed inset-0 z-[100] overflow-y-auto">
+            <div class="bg-slate-900/95 p-6 rounded-3xl border border-amber-600/50 shadow-2xl w-full max-w-md my-auto relative max-h-[90vh] overflow-y-auto hide-scrollbar">
+                <button onclick="closeCreateItemModal()" class="absolute top-4 right-4 text-amber-200/60 hover:text-rose-400 transition p-1">
+                    <span class="material-icons text-2xl">close</span>
+                </button>
+
+                <h3 class="text-2xl font-serif font-bold text-amber-300 mb-4 flex items-center gap-2">
+                    <span class="material-icons text-amber-400">inventory_2</span> Add Item to Vault
+                </h3>
+
+                <form onsubmit="submitCreateItem(event)" class="space-y-4">
+                    <div>
+                        <label class="block text-xs font-serif font-bold text-amber-300 uppercase tracking-wider mb-1">Select Catalog Item or Create Custom</label>
+                        <select id="item-selector" onchange="handleItemCatalogSelect(event)" class="w-full bg-gray-900 border border-amber-900/60 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-amber-400 font-sans text-sm">
+                            <!-- Populated dynamically -->
+                        </select>
+                    </div>
+
+                    <div>
+                        <label class="block text-xs font-serif font-bold text-amber-300 uppercase tracking-wider mb-1">Target Vault List / Category</label>
+                        <select id="item-category-select" required class="w-full bg-gray-900 border border-amber-900/60 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-amber-400 font-sans text-sm">
+                            <!-- Populated dynamically -->
+                        </select>
+                    </div>
+
+                    <div>
+                        <label class="block text-xs font-serif font-bold text-amber-300 uppercase tracking-wider mb-1">Item Name</label>
+                        <input type="text" id="item-name-input" required class="w-full bg-gray-900 border border-amber-900/60 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-amber-400 font-serif" placeholder="e.g. Flame Tongue Longsword">
+                    </div>
+
+                    <div class="grid grid-cols-2 gap-3">
+                        <div>
+                            <label class="block text-xs font-serif font-bold text-amber-300 uppercase tracking-wider mb-1">Rarity</label>
+                            <select id="item-rarity-select" class="w-full bg-gray-900 border border-amber-900/60 rounded-xl px-3 py-3 text-white focus:outline-none focus:border-amber-400 font-serif text-sm">
+                                <option value="common">Common (Slate)</option>
+                                <option value="uncommon">Uncommon (Green)</option>
+                                <option value="rare">Rare (Blue)</option>
+                                <option value="very_rare">Very Rare (Purple)</option>
+                                <option value="legendary">Legendary (Gold)</option>
+                                <option value="artifact">Artifact (Crimson)</option>
+                            </select>
+                        </div>
+                        <div>
+                            <label class="block text-xs font-serif font-bold text-amber-300 uppercase tracking-wider mb-1">Weight (lbs)</label>
+                            <input type="number" id="item-weight-input" step="0.1" min="0" value="1.0" class="w-full bg-gray-900 border border-amber-900/60 rounded-xl px-4 py-3 text-white font-mono text-center font-bold focus:outline-none focus:border-amber-400">
+                        </div>
+                    </div>
+
+                    <div>
+                        <label class="block text-xs font-serif font-bold text-amber-300 uppercase tracking-wider mb-1">Description</label>
+                        <textarea id="item-description-input" rows="2" class="w-full bg-gray-900 border border-amber-900/60 rounded-xl p-3 text-xs text-amber-100/90 font-serif focus:outline-none focus:border-amber-400 resize-none" placeholder="Magical properties, origins, attunement requirements..."></textarea>
+                    </div>
+
+                    <!-- Optional Modifiers / Effects -->
+                    <div class="border-t border-amber-900/40 pt-3 space-y-3">
+                        <span class="block text-xs font-serif font-bold text-amber-300 uppercase tracking-wider">Optional Stats & Spell Attachment</span>
+                        
+                        <div class="grid grid-cols-2 gap-3">
+                            <div>
+                                <label class="block text-[10px] font-serif font-bold text-blue-300 uppercase tracking-wider mb-1">Armor Class (+AC)</label>
+                                <input type="number" id="item-ac-input" value="0" class="w-full bg-gray-900 border border-blue-900/60 rounded-xl px-3 py-2 text-white font-mono text-center font-bold text-sm focus:outline-none focus:border-blue-400">
+                            </div>
+                            <div>
+                                <label class="block text-[10px] font-serif font-bold text-rose-300 uppercase tracking-wider mb-1">Damage Roll</label>
+                                <input type="text" id="item-damage-input" placeholder="e.g. 1d8+2 Fire" class="w-full bg-gray-900 border border-rose-900/60 rounded-xl px-3 py-2 text-white text-xs font-mono focus:outline-none focus:border-rose-400">
+                            </div>
+                        </div>
+
+                        <div class="grid grid-cols-2 gap-3">
+                            <div>
+                                <label class="block text-[10px] font-serif font-bold text-emerald-300 uppercase tracking-wider mb-1">Health Restore</label>
+                                <input type="text" id="item-heal-input" placeholder="e.g. 2d4+2 HP" class="w-full bg-gray-900 border border-emerald-900/60 rounded-xl px-3 py-2 text-white text-xs font-mono focus:outline-none focus:border-emerald-400">
+                            </div>
+                            <div>
+                                <label class="block text-[10px] font-serif font-bold text-amber-300 uppercase tracking-wider mb-1">Attached Ability</label>
+                                <select id="item-spell-select" onchange="toggleCustomSpellInput(event)" class="w-full bg-gray-900 border border-amber-900/60 rounded-xl px-3 py-2 text-white text-xs font-serif focus:outline-none focus:border-amber-400">
+                                    <!-- Populated from spells database -->
+                                </select>
+                                <input type="text" id="item-spell-custom-input" placeholder="Type custom ability..." class="hidden w-full bg-gray-900 border border-amber-900/60 rounded-xl px-3 py-2 text-white text-xs font-serif mt-2 focus:outline-none focus:border-amber-400">
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="flex gap-3 pt-3 border-t border-amber-900/40">
+                        <button type="button" onclick="closeCreateItemModal()" class="flex-1 py-3 bg-slate-800 hover:bg-slate-700 text-amber-200/80 rounded-xl font-serif font-bold">Cancel</button>
+                        <button type="submit" class="flex-1 py-3 bg-gradient-to-r from-amber-700 to-amber-600 hover:from-amber-600 hover:to-amber-500 text-white rounded-xl font-serif font-bold shadow-lg">Add to Vault</button>
+                    </div>
+                </form>
             </div>
         </div>
 
